@@ -7,7 +7,7 @@ api_version: 1
 handlers:
 # Endpoints handler
 - url: /tasks/.*
-  script: redditauth.application
+  script: bot_tasks.application
   login: admin
 
 libraries:

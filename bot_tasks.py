@@ -24,7 +24,7 @@ SIG_LINKS = [
 ]
 
 urlfetch.set_default_fetch_deadline(45)
-with open("config.yml", 'r') as ymlfile:
+with open("config.yaml", 'r') as ymlfile:
     cfg = yaml.load(ymlfile)
 
 class Reddit:
@@ -427,6 +427,84 @@ def format_new_post(movies_data):
     ret_line.append('---\n' + ' ^| '.join(['^' + a for a in SIG_LINKS]))
     return "\n".join(ret_line)
 
+def ignore_message(message):
+    response = None
+    author  = message['author']
+    body    = message['body']
+    date    = datetime.datetime.fromtimestamp(int(message['created_utc']))
+    subject = message['subject'].lower()
+    message_id = int(message['id'],36)
+    # If subject == IGNORE ME
+    if subject == "ignore me":
+        if is_author_ignored(author):
+            # We're already ignoring this user.
+            logging.info("Request to ignore %s when already ignoring this user. Skipping" % author)
+            ignored = True
+        else:
+            # Add username to DB to be ignored
+            logging.info("Adding %s to the ignore list" % author)
+            ignored = True
+            response =  (
+                "Sorry to hear you want me to ignore you. Was it something "
+                "I said? I will not reply to any posts you make in the future. "
+                "If you want me to reply to your posts, you can send me a message. "
+                "Also, if you wouldn't mind filling out this survey giving me "
+                "feedback, I'd really appreciate it. It would make me a better bot"
+            )
+    # If subject ==  REMEMBER ME
+    elif subject == "remember me":
+        # Remove username from DB
+        logging.info("No longer ignoring %s" % author)
+        ignored = False
+        response = (
+            "Ok, I'll reply to your posts from now on. "
+            "If you want me to stop, you can send me "
+            "[a message](http://bit.ly/ignoreredditmoviesbot), "
+            "and I'll stop replying to your posts"
+        )
+    ignore_key = author_ignore_key(author)
+    if not ignore_key:
+        ignore_key = IgnoreList()
+    ignore_key.message_id = message_id
+    ignore_key.message_date = date
+    ignore_key.body = body
+    ignore_key.author = author
+    ignore_key.ignored = ignored
+    ignore_key.put()
+    return response
+
+def delete_message(message):
+    response = None
+    author = message['author']
+    body = message['body']
+    body_regex = re.search(r'delete ((t\d+)_(\w+))',body)
+    thing_name = body_regex.group(1)
+    thing_type = body_regex.group(2)
+    thing_id = int(body_regex.group(3),36)
+    # Figure out what the thing they want us to delete is
+    if thing_type == "t1":
+        # This thing is a comment
+        # Lookup this thing in the DB
+        post = Post.query(Post.comment_id == thing_id).get()
+        if post:
+            original_author = post.author
+            # If the author is the same as the author in question
+            if original_author == author:
+                logging.info("Message from %s matches OP %s. Will delete %s" %(author,original_author,thing_name))
+                # Delete post
+                reddit.delete_from_reddit(thing_name)
+                post.deleted = True
+                post.put()
+            else:
+                # Delete request isn't from OP. Don't delete
+                logging.info("%s isn't the OP. Will not delete %s" % (author,thing_name))
+        else:
+            # Probably shoudn't error in this case
+            logging.error("Couldn't find a post corrsponding to %s in the DB" % thing_name)
+    else:
+        # Probably shoudn't error in this case
+        logging.error("Received Delete request for unknown thing type %s" % thing_type)
+    return response
 reddit = Reddit()
 
 class search_posts(webapp2.RequestHandler):
@@ -449,68 +527,14 @@ class read_messages(webapp2.RequestHandler):
         for message in unread['data']['children']:
             response = None
             author = message['data']['author']
-            body = message['data']['body']
-            date = datetime.datetime.fromtimestamp(int(message['data']['created_utc']))
             name = message['data']['name']
-            message_id = int(message['data']['id'],36)
             if not message['data']['was_comment']:
                 subject = message['data']['subject'].lower()
                 logging.info("Got a message from %s with the subject %s" % (author,subject))
                 if subject in ["ignore me", "remember me"]:
-                    # If subject == IGNORE ME
-                    if subject == "ignore me":
-                        if is_author_ignored(author):
-                            # We're already ignoring this user.
-                            logging.info("Request to ignore %s when already ignoring this user. Skipping" % author)
-                            ignored = True
-                        else:
-                            # Add username to DB to be ignored
-                            logging.info("Adding %s to the ignore list" % author)
-                            ignored = True
-                            response = "Sorry to hear you want me to ignore you. Was it something I said? I will not reply to any posts you make in the future. If you want me to reply to your posts, you can send me a message. Also, if you wouldn't mind filling out this survey giving me feedback, I'd really appreciate it. It would make me a better bot"
-                    # If subject ==  REMEMBER ME
-                    elif subject == "remember me":
-                        # Remove username from DB
-                        logging.info("No longer ignoring %s" % author)
-                        ignored = False
-                        response = "Ok, I'll reply to your posts from now on. If you want me to stop, you can send me a message, and I'll stop replying to your posts"
-                    ignore_key = author_ignore_key(author)
-                    if not ignore_key:
-                        ignore_key = IgnoreList()
-                    ignore_key.message_id = message_id
-                    ignore_key.message_date = date
-                    ignore_key.body = body
-                    ignore_key.author = author
-                    ignore_key.ignored = ignored
-                    ignore_key.put()
+                    ignore_message(message['data'])
                 elif subject == "delete":
-                    body_regex = re.search(r'delete ((t\d+)_(\w+))',body)
-                    thing_name = body_regex.group(1)
-                    thing_type = body_regex.group(2)
-                    thing_id = int(body_regex.group(3),36)
-                    # Figure out what the thing they want us to delete is
-                    if thing_type == "t1":
-                        # This thing is a comment
-                        # Lookup this thing in the DB
-                        post = Post.query(Post.comment_id == thing_id).get()
-                        if post:
-                            original_author = post.author
-                            # If the author is the same as the author in question
-                            if original_author == author:
-                                logging.info("Message from %s matches OP %s. Will delete %s" %(author,original_author,thing_name))
-                                # Delete post
-                                reddit.delete_from_reddit(thing_name)
-                                post.deleted = True
-                                post.put()
-                            else:
-                                # Delete request isn't from OP. Don't delete
-                                logging.info("%s isn't the OP. Will not delete %s" % (author,thing_name))
-                        else:
-                            # Probably shoudn't error in this case
-                            logging.error("Couldn't find a post corrsponding to %s in the DB" % thing_name)
-                    else:
-                        # Probably shoudn't error in this case
-                        logging.error("Received Delete request for unknown thing type %s" % thing_type)
+                    delete_message(message['data'])
             # Mark message as read
             if reddit.mark_message_read(name):
                 if response is not None:
