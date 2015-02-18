@@ -142,12 +142,12 @@ class Reddit:
 
     def send_message(self,to,subject,text):
         url = "https://oauth.reddit.com/api/compose"
-        payload = {
+        payload = urllib.urlencode({
             'to': to,
             'subject':subject,
             'text':text,
             'api_type':'json'
-        }
+        })
         return self.api_call(url,payload)
 
 
@@ -448,9 +448,9 @@ def ignore_message(message):
                 "Sorry to hear you want me to ignore you. Was it something "
                 "I said? I will not reply to any posts you make in the future. "
                 "If you want me to reply to your posts, you can send me "
-                "[a message](bit.ly/rememberredditmoviesbot). Also, if you "
-                "wouldn't mind filling out this survey giving me feedback, "
-                "I'd really appreciate it. It would make me a better bot"
+                "[a message](http://bit.ly/rememberredditmoviesbot). Also, if you "
+                "wouldn't mind filling out [this survey](http://bit.ly/moviesbotfeedback) "
+                "giving me feedback, I'd really appreciate it. It would make me a better bot"
             )
     # If subject ==  REMEMBER ME
     elif subject == "remember me":
@@ -534,9 +534,9 @@ class read_messages(webapp2.RequestHandler):
                 subject = message['data']['subject'].lower()
                 logging.info("Got a message from %s with the subject %s" % (author,subject))
                 if subject in ["ignore me", "remember me"]:
-                    ignore_message(message['data'])
+                    response = ignore_message(message['data'])
                 elif subject == "delete":
-                    delete_message(message['data'])
+                    response = delete_message(message['data'])
             # Mark message as read
             if reddit.mark_message_read(name):
                 if response is not None:
