@@ -1,0 +1,33 @@
+# Fill this out with the relevant info
+# Copy this file into place
+# $ cp config-template.yaml config.yaml
+
+reddit:
+    user: username 
+    password: supersecretpassword
+    client_id: clientid
+    client_secret: clientsecret
+
+# This is not implemented or used yet
+imgur:
+    client_id: fromimgur
+    client_secret: fromimgur
+
+# This is not implemented or checked yet
+rottentomatoes:
+    key: fromrt
+
+# Which mediatypes should be included 
+# the in comments
+mediatypes:
+ - Streaming
+ - Rental
+ - Purchase
+# - DVD
+# - Xfinity
+
+# For testing, create whitelisted subreddits
+# In prod, you should comment this out
+
+whitelisted_subreddits:
+- moviesbot

@@ -1,0 +1,15 @@
+application: redditmoviesbot
+version: 1
+runtime: python27
+threadsafe: true
+api_version: 1
+
+handlers:
+# Endpoints handler
+- url: /tasks/.*
+  script: redditauth.application
+  login: admin
+
+libraries:
+- name: webapp2
+  version: latest
