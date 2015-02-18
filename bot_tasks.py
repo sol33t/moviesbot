@@ -447,9 +447,10 @@ def ignore_message(message):
             response =  (
                 "Sorry to hear you want me to ignore you. Was it something "
                 "I said? I will not reply to any posts you make in the future. "
-                "If you want me to reply to your posts, you can send me a message. "
-                "Also, if you wouldn't mind filling out this survey giving me "
-                "feedback, I'd really appreciate it. It would make me a better bot"
+                "If you want me to reply to your posts, you can send me "
+                "[a message](bit.ly/rememberredditmoviesbot). Also, if you "
+                "wouldn't mind filling out this survey giving me feedback, "
+                "I'd really appreciate it. It would make me a better bot"
             )
     # If subject ==  REMEMBER ME
     elif subject == "remember me":
@@ -505,6 +506,7 @@ def delete_message(message):
         # Probably shoudn't error in this case
         logging.error("Received Delete request for unknown thing type %s" % thing_type)
     return response
+
 reddit = Reddit()
 
 class search_posts(webapp2.RequestHandler):
