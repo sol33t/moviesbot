@@ -13,14 +13,19 @@ from uuid import uuid4
 
 REDDIT_PM_IGNORE = "http://bit.ly/ignoreredditmoviesbot"
 REDDIT_PM_DELETE = "http://reddit.com/message/compose/?to=moviesbot&subject=delete&message=delete%20{thing_id}"
+REDDIT_FAQ       = "http://bit.ly/moviesbotfaq"
+SOURCE_CODE      = "http://bit.ly/moviesbotsource"
 NO_BREAK_SPACE = u'&nbsp;'
 MAX_MESSAGE_LENGTH = 10000
 
 SIG_LINKS = [
-    u'[](#bot)',
-    u'[Stop%sReplying](%s)' % (NO_BREAK_SPACE, REDDIT_PM_IGNORE),
-    u'[Delete](%s)' % REDDIT_PM_DELETE,
-    u'[](#bot)'
+    '[](#bot)',
+    '[Stop%sReplying](%s)' % (NO_BREAK_SPACE, REDDIT_PM_IGNORE),
+    '[Delete](%s)' % REDDIT_PM_DELETE,
+    '[FAQ](%s)' % REDDIT_FAQ,
+    '[Source](%s)' % SOURCE_CODE,
+    ('Created{s}and{s}maintained{s}by{s}/u/stevenviola').format(s=NO_BREAK_SPACE),
+    '[](#bot)'
 ]
 
 urlfetch.set_default_fetch_deadline(45)
@@ -86,7 +91,7 @@ class Reddit:
         else:
             method=urlfetch.GET
         result = urlfetch.fetch(url, method=method, payload=payload, headers=headers)
-        logging.debug(result.content)
+        logging.info(result.content)
         if result.status_code == 200:
             return json.loads(result.content)
         elif result.status_code == 401:
@@ -148,6 +153,7 @@ class Reddit:
             'text':text,
             'api_type':'json'
         })
+        logging.info("Sending the following payload: %s" % payload)
         return self.api_call(url,payload)
 
 
@@ -362,11 +368,16 @@ def comment_on_post(post):
                 logging.debug(comment_text)
                 new_post_result =  reddit.post_to_reddit(name,comment_text,'comment')
                 if new_post_result:
-                    comment_id = int(new_post_result['json']['data']['things'][0]['data']['id'],36)
-                    # get the name of the comment
-                    comment_name = new_post_result['json']['data']['things'][0]['data']['name']
-                    updated_comment_text = comment_text.format(thing_id=comment_name)
-                    reddit.post_to_reddit(comment_name,updated_comment_text,'editusertext')
+                    if new_post_result['json']['errors'] is None:
+                        comment_id = int(new_post_result['json']['data']['things'][0]['data']['id'],36)
+                        # get the name of the comment
+                        comment_name = new_post_result['json']['data']['things'][0]['data']['name']
+                        updated_comment_text = comment_text.format(thing_id=comment_name)
+                        reddit.post_to_reddit(comment_name,updated_comment_text,'editusertext')
+                    else:
+                        # Set comment id to 0 and let this get put in the DB, so we don't try it again
+                        comment_id = 0
+                        logging.error("Received the following error when trying to comment: %s" % new_post_result['json']['errors'])
                 else:
                     error_commenting = True
                     logging.error("Couldn't comment. Not marking this as commented in DB")
