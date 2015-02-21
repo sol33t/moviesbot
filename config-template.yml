@@ -1,6 +1,6 @@
 # Fill this out with the relevant info
 # Copy this file into place
-# $ cp config-template.yaml config.yaml
+# $ cp config-template.yml config.yaml
 
 reddit:
     user: username 
