@@ -26,8 +26,8 @@ mediatypes:
 # - DVD
 # - Xfinity
 
-# For testing, create whitelisted subreddits
-# In prod, you should comment this out
+# Subreddit where the bot updates wiki
+# whitelist and blacklist wiki created
+# in this subreddit
+subreddit: yoursubreddit
 
-whitelisted_subreddits:
-- moviesbot
