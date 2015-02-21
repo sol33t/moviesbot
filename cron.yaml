@@ -1,7 +1,10 @@
 cron:
 - description: Search for posts with imdb.com in the selftext or title or url
   url: /tasks/search/imdb
-  schedule: every 1 mins
+  schedule: every 2 mins
 - description: Process the unread messages in the inbox
   url: /tasks/inbox
   schedule: every 2 mins
+- description: Updates the blacklist and whitelist wiki
+  url: /tasks/wiki
+  schedule: every 1 hours

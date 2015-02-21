@@ -35,7 +35,17 @@ with open("config.yaml", 'r') as ymlfile:
 class Reddit:
 
     def __init__(self):
-        self.get_token()
+        if self.get_token() is True:
+            user_info = self.get_user_info()
+            if user_info is not False:
+                username = user_info['name']
+                link_karma = user_info['link_karma']
+                comment_karma = user_info['comment_karma']
+                logging.info("Starting up running as %s. User has %s link karma and %s comment karma" %(username,link_karma,comment_karma))
+            else:
+                logging.error("Error inilitizing with Reddit and user %s" % cfg['reddit']['user'])
+        else:
+            logging.error("Could not get auth token")
 
     def get_token(self):
         base64creds = base64.b64encode(cfg['reddit']['client_id'] + ":" + cfg['reddit']['client_secret'])
@@ -55,8 +65,9 @@ class Reddit:
         )
         if result.status_code == 200:
             auth_token = json.loads(result.content)
-            logging.debug(auth_token)
+            logging.info(auth_token)
             if 'error' in auth_token:
+                self.auth_token = False
                 logging.error("Got the following error: %s" % token_json['error'])
                 return False
             else:
@@ -66,6 +77,7 @@ class Reddit:
                 return True
         else:
             logging.error("Got the following status code: %s" % result.status_code)
+            self.auth_token = False
             return False
 
     def make_headers(self):
@@ -83,33 +95,39 @@ class Reddit:
 
     def api_call(self,url,payload=None):
         if not self.auth_token:
-            logging.error("Not authenticated. What are you doing!")
-            return False
+            logging.warning("Woah, not authenticated. Will try to get auth_token")
+            if not self.get_token():
+                logging.error("Couldn't get auth token. Aborting API Call")
+                return False
         headers = self.make_headers()
         if payload is not None:
             method=urlfetch.POST
         else:
             method=urlfetch.GET
         result = urlfetch.fetch(url, method=method, payload=payload, headers=headers)
-        logging.info(result.content)
         if result.status_code == 200:
             return json.loads(result.content)
         elif result.status_code == 401:
             logging.warning("Looks like the token expired")
+            # Get a new token here
+            self.get_token()
         else:
             logging.error("The api call returned with status code %d for the following URL:%s" % (result.status_code,url))
-            return False
+        return False
 
     def get_user_info(self):
         return self.api_call("https://oauth.reddit.com/api/v1/me")
 
+    def is_user_moderator(self,subreddit,user):
+        url = "https://oauth.reddit.com/r/%s/about/moderators.json" % (subreddit)
+        moderators = self.api_call(url)
+        for moderator in moderators['data']['children']:
+            if moderator['name'] == user:
+                return True
+        return False
+
     def search_reddit(self,query,sort='new',time='hour'):
-        subreddits = ""
-        restrict_sr = ""
-        if 'whitelisted_subreddits' in cfg:
-            subreddits = "r/" + "+".join(cfg['whitelisted_subreddits']) + "/"
-            restrict_sr = "&restrict_sr=on"
-        url = "https://oauth.reddit.com/%ssearch.json?q=%s%s&sort=%s&t=%s" % (subreddits,query,restrict_sr,sort,time)
+        url = "https://oauth.reddit.com/search.json?q=%s&sort=%s&t=%s" % (query,sort,time)
         logging.info("Performing search on Reddit to the following URL: %s" % url)
         return self.api_call (url)
 
@@ -134,7 +152,11 @@ class Reddit:
 
     def get_unread_messages(self):
         url = "https://oauth.reddit.com/message/unread"
-        return self.api_call (url)
+        unread_messages = self.api_call (url)
+        if unread_messages:
+            return unread_messages
+        else:
+            return False
 
     def mark_message_read(self,messages):
         url = "https://oauth.reddit.com/api/read_message"
@@ -156,13 +178,23 @@ class Reddit:
         logging.info("Sending the following payload: %s" % payload)
         return self.api_call(url,payload)
 
+    def update_wiki(self,subreddit,page,content,reason):
+        url = "https://oauth.reddit.com/r/%s/api/wiki/edit" % subreddit
+        payload = urllib.urlencode({
+            'content': content,
+            'page':page,
+            'reason':reason
+        })
+        logging.info("Sending the following payload: %s" % payload)
+        return self.api_call(url,payload)
 
 class Post(ndb.Model):
     post_id = ndb.IntegerProperty()
+    post_kind = ndb.StringProperty()
     comment_id = ndb.IntegerProperty()
-    reply_id = ndb.IntegerProperty()
     author = ndb.StringProperty()
     permalink = ndb.StringProperty()
+    subreddit = ndb.StringProperty()
     deleted = ndb.BooleanProperty(default=False)
     movies = ndb.StringProperty(repeated=True)
     post_date = ndb.DateTimeProperty()
@@ -175,6 +207,16 @@ class IgnoreList(ndb.Model):
     message_id = ndb.IntegerProperty()
     message_date = ndb.DateTimeProperty()
     update_date = ndb.DateTimeProperty(auto_now_add=True)
+
+class Whitelisted(ndb.Model):
+    subreddit = ndb.StringProperty()
+    updated = ndb.DateTimeProperty(auto_now_add=True)
+    updated_by = ndb.StringProperty()
+
+class Blacklisted(ndb.Model):
+    subreddit = ndb.StringProperty()
+    updated = ndb.DateTimeProperty(auto_now_add=True)
+    updated_by = ndb.StringProperty()
 
 class IMDB:
 
@@ -193,33 +235,9 @@ class IMDB:
             loggine.error("The IMDB Api call returned with status code %d" % result.status_code)
             return False
 
-    def get_title(self):
-        if 'Title' in self.response:
-            return self.response['Title']
-        else:
-            return False
-
-    def get_rating(self):
-        if 'imdbRating' in self.response:
-            return self.response['imdbRating']
-        else:
-            return False
-
-    def get_year(self):
-        if 'Year' in self.response:
-            return self.response['Year']
-        else:
-            return False
-
-    def get_type(self):
-        if 'Type' in self.response:
-            return self.response['Type']
-        else:
-            return False
-
-    def get_tomato_meter(self):
-        if 'tomatoMeter' in self.response:
-            return self.response['tomatoMeter']
+    def get_thing(self,thing):
+        if thing in self.response:
+            return self.response[thing]
         else:
             return False
 
@@ -245,7 +263,7 @@ def search_cisi(movie,imdb_id=None,movie_year=None):
     if result.status_code != 200:
         return False
     # If no imdb link or year, then return first result
-    if imdb_id is None and imdb_year is None:
+    if imdb_id is None and movie_year is None:
         logging.info("We have little data to go on. Just returning first Can I Stream It result")
         return json_result[0]
     else:
@@ -272,10 +290,10 @@ def get_movie_info(movie_id,movie_type):
 def parse_movie_info(results):
     ret = []
     for site in results:
+        name = results[site]['friendlyName']
         if results[site]['price'] > 0:
-            string = "[%s - $%s](%s)" % ( results[site]['friendlyName'], results[site]['price'], results[site]['url'] )
-        else:
-            string = "[%s](%s)" % ( results[site]['friendlyName'], results[site]['url'] )
+            name = "%s - %s" % (results[site]['friendlyName'], results[site]['price'])
+        string = "[%s](%s)" % ( name, results[site]['url'] )
         ret.append(string.replace(' ','&nbsp;'))
     return ret
 
@@ -296,25 +314,49 @@ def author_ignore_key(author):
     else:
         return author_ignored
 
+def get_post_key(int_id,kind):
+    post_lookup = Post.query(ndb.AND(
+        Post.post_kind == kind,
+        Post.post_id == int_id
+    )).get()
+    if not post_lookup:
+        return False
+    else:
+        return post_lookup
+
+def is_listed(list_type,subreddit):
+    if list_type is 'white':
+        entity = Whitelisted
+    elif list_type is 'black':
+        entity = Blacklisted
+    else:
+        return False
+    if entity:
+        listed = entity.query(entity.subreddit == subreddit).get()
+        if listed:
+            return True
+    return False
+
+
 def get_movie_data(movies):
     media_types = cfg['mediatypes']
     movies_ret = []
     for imdb_id in movies:
-        logging.info("Looking up information for IMDB id: %s" %imdb_id)
+        logging.debug("Looking up information for IMDB id: %s" %imdb_id)
         movie_obj = {}
         # Lookup IMDB name
         imdb_obj = IMDB(imdb_id)
-        imdb_title = imdb_obj.get_title()
-        imdb_year = imdb_obj.get_year()
-        rt_tomatometer = imdb_obj.get_tomato_meter()
+        imdb_title = imdb_obj.get_thing('Title')
+        imdb_year = imdb_obj.get_thing('Year')
+        rt_tomatometer = imdb_obj.get_thing('tomatoMeter')
         if imdb_title is False:
             logging.warning("Couldn't get IMDB info for IMDB id: %s" %imdb_id)
             continue
-        if imdb_obj.get_type() != "movie":
+        if imdb_obj.get_thing('Type') != "movie":
             logging.warning("%s is not a movie. Not going to proceed with this title" % imdb_title)
             continue
         # Get IMDB Rating
-        imdb_rating = imdb_obj.get_rating()
+        imdb_rating = imdb_obj.get_thing('imdbRating')
         # Search movie ID from CISI
         logging.info("Going to search CISI for %s" %imdb_title)
         cisi_movie = search_cisi(imdb_title,imdb_id,imdb_year)
@@ -328,47 +370,96 @@ def get_movie_data(movies):
             # Search for CISI Streaming/Rental/Buy
             exclude = True
             for media_type in media_types:
-                logging.info("Going up to look up %s info for CISI movie ID: %s" % (media_type,cisi_movie_id))
+                logging.debug("Going up to look up %s info for CISI movie ID: %s" % (media_type,cisi_movie_id))
                 movie_obj[media_type] = get_movie_info( cisi_movie_id , media_type.lower() )
                 if movie_obj[media_type]:
                     exclude = False
-            if not exclude:
-                movies_ret.append(movie_obj)
-            else:
+            if exclude:
                 logging.warning("No results for all media types. Not including this movie in the list")
+                movie_obj['exclude'] = True
+            else:
+                movie_obj['exclude'] = False
+            movies_ret.append(movie_obj)
         else:
             logging.warning("No CISI results for %s with imdb_id %s" % (imdb_title,imdb_id))
     # Return Object
     return movies_ret
 
-def comment_on_post(post):
+# Adds the post to the database
+# Returns list of movies if we should comment on the post
+# Returns False if we shouldn't reply to the post
+def add_post_to_db(post,int_id,kind):
     movies_list = []
-    comment_id = None
-    error_commenting = False
-    int_id = int(post['data']['id'],36)
-    name = post['data']['name']
+    should_comment = False
+    permalink = None
     author = post['data']['author']
-    permalink = post['data']['permalink']
-    selftext = post['data']['selftext']
     post_date = datetime.datetime.fromtimestamp(int(post['data']['created_utc']))
-    post_key = ndb.Key('Post',int_id).get()
-    # If we never commented on this post
-    if post_key is None:
-        # If this user isn't on the ignore list
-        if not is_author_ignored(author):
-            logging.info("Need to process post %s" % permalink)
+    subreddit = post['data']['subreddit']
+    post_lookup = get_post_key(int_id,kind)
+    # If this post is not in the DB
+    if not post_lookup:
+        logging.info("Need to process post in the %s subreddit" % subreddit)
+        list_of_movies = []
+        if kind == 't3':
+            # this is a post
+            permalink = post['data']['permalink']
             list_of_movies = parse_text_for_imdb_ids(post['data']['selftext'])
             list_of_movies += parse_text_for_imdb_ids(post['data']['url'])
             list_of_movies += parse_text_for_imdb_ids(post['data']['title'])
-            movies_data = get_movie_data(list(set(list_of_movies)))
-            if movies_data:
-                for movie in movies_data:
-                    movies_list.append(movie['imdb_id'])
-                comment_text = format_new_post(movies_data)
-                logging.debug(comment_text)
+            # We shouldn't comment on this post if the subreddit is not whitelisted
+            # If we don't have any whitelisted subreddits, then we shouldn't comment
+            if is_listed('white',subreddit):
+                    should_comment = True
+        elif kind == 't1':
+            # This is a comment
+            permalink = post['data']['context']
+            list_of_movies = parse_text_for_imdb_ids(post['data']['body'])
+            # We shouldn't comment on a summon if the subreddit is blacklisted
+            # If we don't have a list of blacklisted subreddits, then we're good to comment
+            if not is_listed('black',subreddit):
+                should_comment = True
+        movies_list = list(set(list_of_movies))
+        # We want to keep a list of the movies, even if we shouldn't comment
+        Post(
+            post_id = int_id,
+            post_kind = kind,
+            post_date = post_date,
+            author = author,
+            subreddit = subreddit,
+            permalink = permalink,
+            movies = movies_list
+        ).put()
+    # If this user isn't on the ignore list or
+    if is_author_ignored(author) or should_comment is False:
+        return False
+    else:
+        return movies_list
+
+def comment_on_post(post):
+    comment_id = None
+    error_commenting = False
+    if 'kind' in post:
+        kind = post['kind']
+    elif 'kind' in post['data']:
+        kind = post['data']
+    else:
+        logging.error("Could not find a kind in post: %s" % post)
+        return False
+    int_id = int(post['data']['id'],36)
+    name = post['data']['name']
+    movies_list = add_post_to_db(post,int_id,kind)
+    if movies_list is not False:
+        # We should comment on this post
+        movies_data = get_movie_data(movies_list)
+        # If we got valid movie data back
+        if movies_data:
+            comment_text = format_new_post(movies_data)
+            # If the comment text has info
+            if comment_text is not False:
                 new_post_result =  reddit.post_to_reddit(name,comment_text,'comment')
+                # If the comment was posted sucessfully
                 if new_post_result:
-                    if new_post_result['json']['errors'] is None:
+                    if not new_post_result['json']['errors']:
                         comment_id = int(new_post_result['json']['data']['things'][0]['data']['id'],36)
                         # get the name of the comment
                         comment_name = new_post_result['json']['data']['things'][0]['data']['name']
@@ -376,32 +467,32 @@ def comment_on_post(post):
                         reddit.post_to_reddit(comment_name,updated_comment_text,'editusertext')
                     else:
                         # Set comment id to 0 and let this get put in the DB, so we don't try it again
-                        comment_id = 0
+                        comment_id = None
                         logging.error("Received the following error when trying to comment: %s" % new_post_result['json']['errors'])
                 else:
                     error_commenting = True
                     logging.error("Couldn't comment. Not marking this as commented in DB")
             else:
-                logging.warning("No movie data was found for post %s" % name)
-            if not error_commenting:
-                    post_key = Post(
-                        id = int_id,
-                        post_id = int_id,
-                        comment_id = comment_id,
-                        post_date = post_date,
-                        author = author,
-                        permalink = permalink,
-                        movies = movies_list
-                    ).put()
-                    logging.info("Added %s to the db. Will not comment on this post again" % name)
-            else:
-                logging.warning("An error was encountered with %s. Not adding this post to the DB in hope a subsequent run will fix the issue" % name)
+                logging.warning("No links to provide to the user for post %s" % name)
         else:
-            logging.info("Reply on %s skipping. %s would prefer to be ignored" % (name,author))
+            logging.warning("No movie data was found for post %s" % name)
+        if not error_commenting:
+                post_key = get_post_key(int_id,kind)
+                post_key.comment_id = comment_id
+                post_key.put()
+                logging.info("Added %s to the db. Will not comment on this post again" % name)
+        else:
+            logging.warning("An error was encountered with %s. Not adding this post to the DB in hope a subsequent run will fix the issue" % name)
+    else:
+        logging.info("Reply on %s skipping." % (name))
 
 def format_new_post(movies_data):
     default_media_types = cfg['mediatypes']
     media_types=[]
+    # Check for which types have information
+    # This limits it so that if we don't have
+    # Information for all movies for a certain type,
+    # then we won't include a blank column
     for media_type in default_media_types:
         type_in_data = False
         for movie in movies_data:
@@ -413,6 +504,7 @@ def format_new_post(movies_data):
     heading = ['Title','IMDB','Rotten Tomatoes']
     heading += media_types
     seperator = []
+    actual_links = False
     for index, w in enumerate(heading):
         sep = "---"
         if index > 1:
@@ -420,7 +512,15 @@ def format_new_post(movies_data):
         seperator.append(sep)
     ret_line.append(" | ".join(heading))
     ret_line.append("|".join(seperator))
+    excluded_movies = []
     for movie in movies_data:
+        # If we have details about the movie, but no 
+        # links, then add to end of the post
+        if movie['exclude'] and 'imdb_title' in movie:
+            logging.info("We don't have any streams, so tell the user we excluded the title")
+            excluded_movies.append("[%s](%s)" % (movie['imdb_title'],movie['links']['shortUrl']))
+            continue
+        actual_links = True
         short_url = movie['links']['shortUrl']
         title = movie['imdb_title']
         rt_rating = movie['tomatoMeter']
@@ -435,8 +535,15 @@ def format_new_post(movies_data):
             type_joined = ' '.join(type_strings)
             line.append(type_joined)
         ret_line.append('|'.join(line))
-    ret_line.append('---\n' + ' ^| '.join(['^' + a for a in SIG_LINKS]))
-    return "\n".join(ret_line)
+    if excluded_movies:
+        ret_line.append("\nNo streaming, rental, or purchase info for: "+' , '.join(excluded_movies))
+    ret_line.append('\n---\n' + ' ^| '.join(['^' + a for a in SIG_LINKS]))
+    # If we don't have streams for any movies, we shouldn't comment
+    # Only return the formatted text if we have useful info
+    if actual_links:
+        return "\n".join(ret_line)
+    else:
+        return False
 
 def ignore_message(message):
     response = None
@@ -450,19 +557,18 @@ def ignore_message(message):
         if is_author_ignored(author):
             # We're already ignoring this user.
             logging.info("Request to ignore %s when already ignoring this user. Skipping" % author)
-            ignored = True
         else:
             # Add username to DB to be ignored
             logging.info("Adding %s to the ignore list" % author)
-            ignored = True
-            response =  (
-                "Sorry to hear you want me to ignore you. Was it something "
-                "I said? I will not reply to any posts you make in the future. "
-                "If you want me to reply to your posts, you can send me "
-                "[a message](http://bit.ly/rememberredditmoviesbot). Also, if you "
-                "wouldn't mind filling out [this survey](http://bit.ly/moviesbotfeedback) "
-                "giving me feedback, I'd really appreciate it. It would make me a better bot"
-            )
+        ignored = True
+        response =  (
+            "Sorry to hear you want me to ignore you. Was it something "
+            "I said? I will not reply to any posts you make in the future. "
+            "If you want me to reply to your posts, you can send me "
+            "[a message](http://bit.ly/rememberredditmoviesbot). Also, if you "
+            "wouldn't mind filling out [this survey](http://bit.ly/moviesbotfeedback) "
+            "giving me feedback, I'd really appreciate it. It would make me a better bot"
+        )
     # If subject ==  REMEMBER ME
     elif subject == "remember me":
         # Remove username from DB
@@ -484,6 +590,52 @@ def ignore_message(message):
     ignore_key.ignored = ignored
     ignore_key.put()
     return response
+
+def add_to_list(message):
+    author  = message['author']
+    body    = message['body']
+    date    = datetime.datetime.fromtimestamp(int(message['created_utc']))
+    subject = message['subject'].lower()
+    message_id = int(message['id'],36)
+    # Get the subreddit in the message
+    match = re.search(r'r/(\w+)',body)
+    if not match:
+        return False
+    subreddit = match.group(1)
+    logging.info("Subreddit is %s" % subreddit)
+    # Check to see if user is moderator of subreddit
+    # If not, abort now
+    if reddit.is_user_moderator(subreddit,author):
+        # Else, see what they want to do
+        if subject == "whitelist":
+            list_type = 'white'
+            remove_from_entity = Blacklisted
+            entity = Whitelisted
+        elif subject == "blacklist":
+            list_type = 'black'
+            remove_from_entity = Whitelisted
+            entity = Blacklisted
+        if not is_listed(list_type,subreddit):
+            # Subreddit is not listed
+            entity(
+                subreddit = subreddit,
+                updated_by = author
+            ).put()
+            remove_from_entity.query(remove_from_entity.subreddit==subreddit).get().key.delete()
+            logging.info("%s is now %slisted because of %s" % (subreddit,list_type,author))
+            subreddit_mods = "/r/%s" %subreddit
+            reply_subject = "%s added to /u/moviesbot %s" % (subreddit_mods,subject)
+            response = (
+                "This message is to inform you that the request by %s "
+                "to %s /r/%s has been processed. /u/moviesbot will respect "
+                "this decision moving forward. You can find out more "
+                "about what this means by refering to [this wiki](http://bit.ly/moviesbotmods)"
+                % (author,subject,subreddit)
+            )
+            reddit.send_message(subreddit_mods,reply_subject,response)
+    else:
+        logging.warning("%s is not a moderator of %s. Abort" % (author,subreddit))
+    return None
 
 def delete_message(message):
     response = None
@@ -507,6 +659,14 @@ def delete_message(message):
                 reddit.delete_from_reddit(thing_name)
                 post.deleted = True
                 post.put()
+                response =  (
+                    "Ok, I deleted my comment on your post. Sorry about that. "
+                    "If you never want me to respond to you again, I understand. you can always send "
+                    "[a message](http://bit.ly/ignoreredditmoviesbot), and I'll never "
+                    "ever respond to your post, I promise. Also, if you wouldn't mind filling out "
+                    "[this survey](http://bit.ly/moviesbotfeedback) giving me feedback, "
+                    "I'd really appreciate it. It would make me a better bot"
+                )
             else:
                 # Delete request isn't from OP. Don't delete
                 logging.info("%s isn't the OP. Will not delete %s" % (author,thing_name))
@@ -520,45 +680,74 @@ def delete_message(message):
 
 reddit = Reddit()
 
+# Performs a search for posts with imdb links in the title,
+# selftext, and url. For each post, send to comment on post
 class search_posts(webapp2.RequestHandler):
     def get(self):
         search_results = reddit.search_reddit("title%3Aimdb.com+OR+url%3Aimdb.com+OR+imdb.com",time='all')
         if search_results:
             for post in search_results['data']['children']:
-                # If subreddit is not on block list
                 comment_on_post(post)
 
+
+# Reads unread messages from the inbox. 
 class read_messages(webapp2.RequestHandler):
     def get(self):
         logging.info("Getting list of unread messages")
         # Get unread messages
         unread = reddit.get_unread_messages()
-        if not unread:
+        if unread:
+            logging.debug("Received the following response for unread messages %s" % unread)
+            for message in unread['data']['children']:
+                response = None
+                author = message['data']['author']
+                name = message['data']['name']
+                if message['data']['was_comment']:
+                    if 'subject' in message['data'] and message['data']['subject'] == "username mention":
+                        subreddit = message['data']['subreddit']
+                        logging.info("Got username mention in the %s subreddit" % subreddit)
+                        # Check if mention was in blacklisted subreddit
+                        comment_on_post(message)
+                else:
+                    subject = message['data']['subject'].lower()
+                    logging.info("Got a message from %s with the subject %s" % (author,subject))
+                    if subject in ["ignore me", "remember me"]:
+                        response = ignore_message(message['data'])
+                    elif subject in ["blacklist","whitelist"]:
+                        response = add_to_list(message['data'])
+                    elif subject == "delete":
+                        response = delete_message(message['data'])
+                # Mark message as read
+                if reddit.mark_message_read(name):
+                    if response is not None:
+                        # Reply to the user
+                        reply_subject = "re: %s" %subject
+                        logging.info("Replying with subject: %s and response %s" % (reply_subject,response))
+                        reddit.send_message(author,reply_subject,response)
+        else:
             logging.error("Error getting unread messages")
-            return True
-        logging.debug("Received the following response for unread messages %s" % unread)
-        for message in unread['data']['children']:
-            response = None
-            author = message['data']['author']
-            name = message['data']['name']
-            if not message['data']['was_comment']:
-                subject = message['data']['subject'].lower()
-                logging.info("Got a message from %s with the subject %s" % (author,subject))
-                if subject in ["ignore me", "remember me"]:
-                    response = ignore_message(message['data'])
-                elif subject == "delete":
-                    response = delete_message(message['data'])
-            # Mark message as read
-            if reddit.mark_message_read(name):
-                if response is not None:
-                    # Reply to the user
-                    reply_subject = "re: %s" %subject
-                    logging.info("Replying with subject: %s and response %s" % (reply_subject,response))
-                    reddit.send_message(author,reply_subject,response)
+
+class update_wiki_lists(webapp2.RequestHandler):
+    def get(self):
+        subreddit = cfg['subreddit']
+        lists = {'white':Whitelisted,'black':Blacklisted}
+        for list_type in lists:
+            entity = lists[list_type]
+            listed_subreddits = []
+            for item in entity.query().fetch():
+                listed_subreddits.append("/r/%s/" % item.subreddit)
+            content = '\n'.join(listed_subreddits)
+            page = "%slisted" % list_type
+            reason = "Automated update of %slisted subreddits" % list_type
+            if reddit.update_wiki(subreddit,page,content,reason):
+                logging.info("Sucessfully updated the %slisted wiki in /r/%s" % (list_type,subreddit))
+            else:
+                logging.error("Error updating the %slisted wiki in /r/%s" % (list_type,subreddit))
 
 application = webapp2.WSGIApplication([
     ('/tasks/search/imdb', search_posts),
-    ('/tasks/inbox', read_messages)
+    ('/tasks/inbox', read_messages),
+    ('/tasks/wiki', update_wiki_lists)
 ],
     debug=True
 )
