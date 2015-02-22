@@ -4,7 +4,7 @@ MoviesBot is a reddit bot that looks for IMDB links in reddit posts and replies 
 
 Comments include a table with all information that was found for the movies listed.
 
-![moviesbot screenshot](http://i.imgur.com/IUKi2Ri.png)
+![moviesbot screenshot](http://i.imgur.com/V0YtY6x.png)
 
 This reddit bot runs on Google App Engine, and once configured, can be uploaded to run in GAE and run with the resources provided with the free quotas
 

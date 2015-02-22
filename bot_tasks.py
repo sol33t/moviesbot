@@ -11,10 +11,13 @@ from google.appengine.api import urlfetch
 from google.appengine.ext import ndb
 from uuid import uuid4
 
-REDDIT_PM_IGNORE = "http://bit.ly/ignoreredditmoviesbot"
-REDDIT_PM_DELETE = "http://reddit.com/message/compose/?to=moviesbot&subject=delete&message=delete%20{thing_id}"
-REDDIT_FAQ       = "http://bit.ly/moviesbotfaq"
-SOURCE_CODE      = "http://bit.ly/moviesbotsource"
+REDDIT_PM_IGNORE   = "http://www.reddit.com/message/compose/?to=moviesbot&subject=IGNORE%20ME&message=[IGNORE%20ME](http://i.imgur.com/s2jMqQN.jpg\)"
+REDDIT_PM_REMEMBER = "http://www.reddit.com/message/compose/?to=moviesbot&subject=REMEMBER%20ME&message=I%20made%20a%20mistake%20I%27m%20sorry,%20will%20you%20take%20me%20back"
+REDDIT_PM_DELETE   = "http://reddit.com/message/compose/?to=moviesbot&subject=delete&message=delete%20{thing_id}"
+REDDIT_PM_FEEDBACK = "https://docs.google.com/forms/d/1PZTwDM71_Wiwxdq6NGKHI1zf-GC2oahqxwn8tX-Hq_E/viewform"
+REDDIT_PM_MODS     = "https://www.reddit.com/r/moviesbot/wiki/faq#wiki_info_for_moderators"
+REDDIT_FAQ         = "https://www.reddit.com/r/moviesbot/wiki/faq"
+SOURCE_CODE        = "https://github.com/stevenviola/moviesbot"
 NO_BREAK_SPACE = u'&nbsp;'
 MAX_MESSAGE_LENGTH = 10000
 
@@ -565,9 +568,10 @@ def ignore_message(message):
             "Sorry to hear you want me to ignore you. Was it something "
             "I said? I will not reply to any posts you make in the future. "
             "If you want me to reply to your posts, you can send me "
-            "[a message](http://bit.ly/rememberredditmoviesbot). Also, if you "
-            "wouldn't mind filling out [this survey](http://bit.ly/moviesbotfeedback) "
-            "giving me feedback, I'd really appreciate it. It would make me a better bot"
+            "[a message](%s). Also, if you "
+            "wouldn't mind filling out [this survey](%s) "
+            "giving me feedback, I'd really appreciate it. It would make me a better bot" %
+            (REDDIT_PM_REMEMBER,REDDIT_PM_FEEDBACK)
         )
     # If subject ==  REMEMBER ME
     elif subject == "remember me":
@@ -577,8 +581,9 @@ def ignore_message(message):
         response = (
             "Ok, I'll reply to your posts from now on. "
             "If you want me to stop, you can send me "
-            "[a message](http://bit.ly/ignoreredditmoviesbot), "
-            "and I'll stop replying to your posts"
+            "[a message](%s), "
+            "and I'll stop replying to your posts" %
+            (REDDIT_PM_IGNORE)
         )
     ignore_key = author_ignore_key(author)
     if not ignore_key:
@@ -633,8 +638,8 @@ def add_to_list(message):
                 "This message is to inform you that the request by %s "
                 "to %s /r/%s has been processed. /u/moviesbot will respect "
                 "this decision moving forward. You can find out more "
-                "about what this means by refering to [this wiki](http://bit.ly/moviesbotmods)"
-                % (author,subject,subreddit)
+                "about what this means by refering to [this wiki](%s)"
+                % (author,subject,subreddit,REDDIT_PM_MODS)
             )
             reddit.send_message(subreddit_mods,reply_subject,response)
     else:
@@ -666,10 +671,11 @@ def delete_message(message):
                 response =  (
                     "Ok, I deleted my comment on your post. Sorry about that. "
                     "If you never want me to respond to you again, I understand. you can always send "
-                    "[a message](http://bit.ly/ignoreredditmoviesbot), and I'll never "
+                    "[a message](%s), and I'll never "
                     "ever respond to your post, I promise. Also, if you wouldn't mind filling out "
-                    "[this survey](http://bit.ly/moviesbotfeedback) giving me feedback, "
-                    "I'd really appreciate it. It would make me a better bot"
+                    "[this survey](%s) giving me feedback, "
+                    "I'd really appreciate it. It would make me a better bot" %
+                    (REDDIT_PM_IGNORE,REDDIT_PM_FEEDBACK)
                 )
             else:
                 # Delete request isn't from OP. Don't delete
