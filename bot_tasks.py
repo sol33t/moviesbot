@@ -740,7 +740,7 @@ class update_wiki_lists(webapp2.RequestHandler):
             listed_subreddits = []
             for item in entity.query().fetch():
                 listed_subreddits.append("/r/%s/" % item.subreddit)
-            content = '\n'.join(listed_subreddits)
+            content = '\n\n'.join(listed_subreddits)
             page = "%slisted" % list_type
             reason = "Automated update of %slisted subreddits" % list_type
             if reddit.update_wiki(subreddit,page,content,reason):
