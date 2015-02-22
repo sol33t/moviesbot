@@ -621,7 +621,11 @@ def add_to_list(message):
                 subreddit = subreddit,
                 updated_by = author
             ).put()
-            remove_from_entity.query(remove_from_entity.subreddit==subreddit).get().key.delete()
+            old_entity = remove_from_entity.query(remove_from_entity.subreddit==subreddit).get()
+            if old_entity:
+                # Delete the entity from the 
+                # other list. We can't have a subreddit on both lists
+                old_entity.key.delete()
             logging.info("%s is now %slisted because of %s" % (subreddit,list_type,author))
             subreddit_mods = "/r/%s" %subreddit
             reply_subject = "%s added to /u/moviesbot %s" % (subreddit_mods,subject)

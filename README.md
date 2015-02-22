@@ -53,11 +53,12 @@ We currently do not need to authenticate to get the Rotten Tomatoes information.
 - Utilize Google App Engine Task Queues for parallel processing when retriving post information
 - Create frontend to view stats on most mentioned movies on Reddit
 
-Further Reading
+## Further Reading
 
 The [moviesbot FAQ](https://www.reddit.com/r/moviesbot/wiki/faq) details how to interact with this bot on Reddit
 
 ## Credits
 
 All code in this repository was developed by Steven Viola
+
 Information id provided by [the OMDb API](http://www.omdbapi.com/) and [Can I Stream.It](http://www.canistream.it/)
