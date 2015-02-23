@@ -71,7 +71,7 @@ class Reddit:
             logging.info(auth_token)
             if 'error' in auth_token:
                 self.auth_token = False
-                logging.error("Got the following error: %s" % token_json['error'])
+                logging.error("Got the following error: %s" % auth_token['error'])
                 return False
             else:
                 logging.info("Setting auth token")
@@ -201,6 +201,7 @@ class Post(ndb.Model):
     deleted = ndb.BooleanProperty(default=False)
     movies = ndb.StringProperty(repeated=True)
     post_date = ndb.DateTimeProperty()
+    processed = ndb.BooleanProperty(default=False)
     reply_date = ndb.DateTimeProperty(auto_now_add=True)
 
 class IgnoreList(ndb.Model):
@@ -235,7 +236,7 @@ class IMDB:
             json_ret = json.loads(result.content)
             return json_ret
         else:
-            loggine.error("The IMDB Api call returned with status code %d" % result.status_code)
+            logging.error("The IMDB Api call returned with status code %d" % result.status_code)
             return False
 
     def get_thing(self,thing):
@@ -391,7 +392,7 @@ def get_movie_data(movies):
 # Adds the post to the database
 # Returns list of movies if we should comment on the post
 # Returns False if we shouldn't reply to the post
-def add_post_to_db(post,int_id,kind):
+def add_post_to_db(post,int_id,kind,force=False):
     movies_list = []
     should_comment = False
     permalink = None
@@ -409,36 +410,42 @@ def add_post_to_db(post,int_id,kind):
             list_of_movies = parse_text_for_imdb_ids(post['data']['selftext'])
             list_of_movies += parse_text_for_imdb_ids(post['data']['url'])
             list_of_movies += parse_text_for_imdb_ids(post['data']['title'])
-            # We shouldn't comment on this post if the subreddit is not whitelisted
-            # If we don't have any whitelisted subreddits, then we shouldn't comment
-            if is_listed('white',subreddit):
-                    should_comment = True
         elif kind == 't1':
             # This is a comment
             permalink = post['data']['context']
             list_of_movies = parse_text_for_imdb_ids(post['data']['body'])
-            # We shouldn't comment on a summon if the subreddit is blacklisted
-            # If we don't have a list of blacklisted subreddits, then we're good to comment
-            if not is_listed('black',subreddit):
-                should_comment = True
         movies_list = list(set(list_of_movies))
-        # We want to keep a list of the movies, even if we shouldn't comment
-        Post(
+        # We want to keep a list of the movies, even if we shouldn't comment        
+        post_key = Post(
             post_id = int_id,
             post_kind = kind,
             post_date = post_date,
             author = author,
-            subreddit = subreddit,
             permalink = permalink,
+            subreddit = subreddit,
             movies = movies_list
         ).put()
-    # If this user isn't on the ignore list or
+        logging.info("Finished processing post in the %s subreddit" % subreddit)
+    else:
+        movies_list = post_lookup.movies
+    # We shouldn't comment on this post if the subreddit is not whitelisted
+    # If we don't have any whitelisted subreddits, then we shouldn't comment
+    if kind == 't3' and (is_listed('white',subreddit) or force is True):
+            should_comment = True
+    # We shouldn't comment on a summon if the subreddit is blacklisted
+    # If we don't have a list of blacklisted subreddits, then we're good to comment
+    elif kind == 't1' and not is_listed('black',subreddit):
+        should_comment = True
+    # If this user isn't on the ignore list 
+    # or we shouldn't comment
     if is_author_ignored(author) or should_comment is False:
+        # If we're not going to comment, then we need to mark 
+        # processed as true to avoid checking this one again
         return False
     else:
         return movies_list
 
-def comment_on_post(post):
+def comment_on_post(post, force=False):
     comment_id = None
     error_commenting = False
     if 'kind' in post:
@@ -450,8 +457,14 @@ def comment_on_post(post):
         return False
     int_id = int(post['data']['id'],36)
     name = post['data']['name']
-    movies_list = add_post_to_db(post,int_id,kind)
+    movies_list = add_post_to_db(post,int_id,kind,force)
     if movies_list is not False:
+        post_key = get_post_key(int_id,kind)
+        # Only continue if we haven't processed this post
+        # Even if forced, we can only comment on a post once
+        if post_key.processed == True:
+            logging.info("We've already commented on %s before. Can not comment again" % name)
+            return False
         # We should comment on this post
         movies_data = get_movie_data(movies_list)
         # If we got valid movie data back
@@ -470,7 +483,6 @@ def comment_on_post(post):
                         reddit.post_to_reddit(comment_name,updated_comment_text,'editusertext')
                     else:
                         # Set comment id to 0 and let this get put in the DB, so we don't try it again
-                        comment_id = None
                         logging.error("Received the following error when trying to comment: %s" % new_post_result['json']['errors'])
                 else:
                     error_commenting = True
@@ -480,8 +492,8 @@ def comment_on_post(post):
         else:
             logging.warning("No movie data was found for post %s" % name)
         if not error_commenting:
-                post_key = get_post_key(int_id,kind)
                 post_key.comment_id = comment_id
+                post_key.processed = True
                 post_key.put()
                 logging.info("Added %s to the db. Will not comment on this post again" % name)
         else:
@@ -690,15 +702,31 @@ def delete_message(message):
 
 reddit = Reddit()
 
+def search_process_reddit_posts(query,force=False):
+    search_results = reddit.search_reddit(query)
+    if search_results:
+        for post in search_results['data']['children']:
+            comment_on_post(post,force)
+
 # Performs a search for posts with imdb links in the title,
 # selftext, and url. For each post, send to comment on post
-class search_posts(webapp2.RequestHandler):
+class search_imdb(webapp2.RequestHandler):
     def get(self):
-        search_results = reddit.search_reddit("title%3Aimdb.com+OR+url%3Aimdb.com+OR+imdb.com",time='all')
-        if search_results:
-            for post in search_results['data']['children']:
-                comment_on_post(post)
+        search_process_reddit_posts("title%3Aimdb.com+OR+url%3Aimdb.com+OR+imdb.com")
 
+class search_usermention(webapp2.RequestHandler):
+    def get(self):
+        search_process_reddit_posts(
+            "title%3A/u/{u}+OR+url%3A/u/{u}+OR+/u/{u}".format(u=cfg['reddit']['user']),
+            force=True
+        )
+
+class manual_process(webapp2.RequestHandler):
+    def get(self,post_id):
+        post_results = reddit.api_call("https://oauth.reddit.com/comments/%s.json" % post_id)
+        if post_results:
+            logging.info("Forcing processing on post %s" % post_id)
+            comment_on_post(post_results[0]['data']['children'][0],force=True)
 
 # Reads unread messages from the inbox. 
 class read_messages(webapp2.RequestHandler):
@@ -755,7 +783,9 @@ class update_wiki_lists(webapp2.RequestHandler):
                 logging.error("Error updating the %slisted wiki in /r/%s" % (list_type,subreddit))
 
 application = webapp2.WSGIApplication([
-    ('/tasks/search/imdb', search_posts),
+    ('/tasks/search/imdb', search_imdb),
+    ('/tasks/search/user', search_usermention),
+    ('/tasks/manual/(\w+)', manual_process),
     ('/tasks/inbox', read_messages),
     ('/tasks/wiki', update_wiki_lists)
 ],

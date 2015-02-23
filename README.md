@@ -21,7 +21,7 @@ This reddit bot runs on Google App Engine, and once configured, can be uploaded 
 > cp config-template.yml config.yaml
 
 5) Deploy to Google App Engine
-> google_appengine/appcfg.py update <project id>/
+> google_appengine/appcfg.py update [project id]/
 
 ## Configuration File Explination
 
