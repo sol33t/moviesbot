@@ -15,7 +15,9 @@ def search_cisi(movie,imdb_id=None,movie_year=None):
         movie = movie.replace('+','plus ')
         logging.info("Title starts with +. Renaming movie to %s" %movie)
     urlfetch.set_default_fetch_deadline(45)
-    result = urlfetch.fetch('http://www.canistream.it/services/search?movieName=%s' % urllib.quote_plus(movie))
+    url = 'http://www.canistream.it/services/search?movieName=%s' % urllib.quote_plus(movie.encode('utf8'))
+    logging.debug("Searching CISI: %s" % url)
+    result = urlfetch.fetch(url)
     json_result = json.loads(result.content)
     if result.status_code != 200:
         return False
