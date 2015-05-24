@@ -1,22 +1,27 @@
 import webapp2
-import urllib
-import base64
-import json
 import logging
 import datetime
-import time
 import yaml
+import config
 import re
-from google.appengine.api import urlfetch
+import json
+import textwrap
+
 from google.appengine.ext import ndb
+from google.appengine.api import taskqueue
+
+from modules.reddit import Reddit
+from modules.imdb import IMDB
+from modules import search_cisi, get_movie_info, parse_movie_info, parse_text_for_imdb_ids
+
 from uuid import uuid4
 
-REDDIT_PM_IGNORE   = "http://www.reddit.com/message/compose/?to=moviesbot&subject=IGNORE%20ME&message=[IGNORE%20ME](http://i.imgur.com/s2jMqQN.jpg\)"
-REDDIT_PM_REMEMBER = "http://www.reddit.com/message/compose/?to=moviesbot&subject=REMEMBER%20ME&message=I%20made%20a%20mistake%20I%27m%20sorry,%20will%20you%20take%20me%20back"
-REDDIT_PM_DELETE   = "http://reddit.com/message/compose/?to=moviesbot&subject=delete&message=delete%20{thing_id}"
+REDDIT_PM_IGNORE   = "http://www.reddit.com/message/compose/?to={username}&subject=IGNORE%20ME&message=[IGNORE%20ME](http://i.imgur.com/s2jMqQN.jpg\)".format(username=config.reddit['user'])
+REDDIT_PM_REMEMBER = "http://www.reddit.com/message/compose/?to={username}&subject=REMEMBER%20ME&message=I%20made%20a%20mistake%20I%27m%20sorry,%20will%20you%20take%20me%20back".format(username=config.reddit['user'])
+REDDIT_PM_DELETE   = "http://reddit.com/message/compose/?to={username}&subject=delete&message=delete%20{thing_id}".format(username=config.reddit['user'],thing_id='{thing_id}')
 REDDIT_PM_FEEDBACK = "https://docs.google.com/forms/d/1PZTwDM71_Wiwxdq6NGKHI1zf-GC2oahqxwn8tX-Hq_E/viewform"
-REDDIT_PM_MODS     = "https://www.reddit.com/r/moviesbot/wiki/faq#wiki_info_for_moderators"
-REDDIT_FAQ         = "https://www.reddit.com/r/moviesbot/wiki/faq"
+REDDIT_PM_MODS     = "https://www.reddit.com/r/{subreddit}/wiki/faq#wiki_info_for_moderators".format(subreddit=config.subreddit)
+REDDIT_FAQ         = "https://www.reddit.com/r/{subreddit}/wiki/faq".format(subreddit=config.subreddit)
 SOURCE_CODE        = "https://github.com/stevenviola/moviesbot"
 NO_BREAK_SPACE = u'&nbsp;'
 MAX_MESSAGE_LENGTH = 10000
@@ -31,177 +36,19 @@ SIG_LINKS = [
     '[](#bot)'
 ]
 
-urlfetch.set_default_fetch_deadline(45)
-with open("config.yaml", 'r') as ymlfile:
-    cfg = yaml.load(ymlfile)
-
-class Reddit:
-
-    def __init__(self):
-        if self.get_token() is True:
-            user_info = self.get_user_info()
-            if user_info is not False:
-                username = user_info['name']
-                link_karma = user_info['link_karma']
-                comment_karma = user_info['comment_karma']
-                logging.info("Starting up running as %s. User has %s link karma and %s comment karma" %(username,link_karma,comment_karma))
-            else:
-                logging.error("Error inilitizing with Reddit and user %s" % cfg['reddit']['user'])
-        else:
-            logging.error("Could not get auth token")
-
-    def get_token(self):
-        base64creds = base64.b64encode(cfg['reddit']['client_id'] + ":" + cfg['reddit']['client_secret'])
-        request_payload = {"grant_type": "password",
-            "duration": "permanent",
-            "username": cfg['reddit']['user'],
-            "password": cfg['reddit']['password']
-        }
-        request_payload_encoded = urllib.urlencode(request_payload)
-        headers={"Authorization": 
-            "Basic %s" % base64creds
-        }
-        result = urlfetch.fetch("https://ssl.reddit.com/api/v1/access_token",
-            payload=request_payload_encoded,
-            method=urlfetch.POST,
-            headers=headers,
-        )
-        if result.status_code == 200:
-            auth_token = json.loads(result.content)
-            logging.info(auth_token)
-            if 'error' in auth_token:
-                self.auth_token = False
-                logging.error("Got the following error: %s" % auth_token['error'])
-                return False
-            else:
-                logging.info("Setting auth token")
-                self.auth_token = auth_token["access_token"]
-                self.auth_expires = int(time.time())+auth_token['expires_in']
-                return True
-        else:
-            logging.error("Got the following status code: %s" % result.status_code)
-            self.auth_token = False
-            return False
-
-    def make_headers(self):
-        if int(time.time()) > self.auth_expires:
-            # We've had this auth token for longer than an hour
-            # Need to refresh the auth
-            if not self.get_token():
-                logging.error("Error when refreshing auth token")
-        headers = {
-            "Authorization": "bearer " + self.auth_token,
-            "User-Agent": "moviesbot version 0.0.1 by /u/moviesbot"
-        }
-        return headers
-
-
-    def api_call(self,url,payload=None):
-        if not self.auth_token:
-            logging.warning("Woah, not authenticated. Will try to get auth_token")
-            if not self.get_token():
-                logging.error("Couldn't get auth token. Aborting API Call")
-                return False
-        headers = self.make_headers()
-        if payload is not None:
-            method=urlfetch.POST
-        else:
-            method=urlfetch.GET
-        result = urlfetch.fetch(url, method=method, payload=payload, headers=headers)
-        if result.status_code == 200:
-            return json.loads(result.content)
-        elif result.status_code == 401:
-            logging.warning("Looks like the token expired")
-            # Get a new token here
-            self.get_token()
-        else:
-            logging.error("The api call returned with status code %d for the following URL:%s" % (result.status_code,url))
-        return False
-
-    def get_user_info(self):
-        return self.api_call("https://oauth.reddit.com/api/v1/me")
-
-    def is_user_moderator(self,subreddit,user):
-        url = "https://oauth.reddit.com/r/%s/about/moderators.json" % (subreddit)
-        moderators = self.api_call(url)
-        for moderator in moderators['data']['children']:
-            if moderator['name'] == user:
-                return True
-        return False
-
-    def search_reddit(self,query,sort='new',time='hour'):
-        url = "https://oauth.reddit.com/search.json?q=%s&sort=%s&t=%s" % (query,sort,time)
-        logging.info("Performing search on Reddit to the following URL: %s" % url)
-        return self.api_call (url)
-
-    def post_to_reddit(self,thing_id,text,post_type='comment'):
-        logging.info("Posting comment to reddit post %s" % thing_id)
-        logging.debug("Text is %s" % text)
-        url = "https://oauth.reddit.com/api/%s/.json" % post_type
-        payload = { 'thing_id':thing_id,
-                    'text':text,
-                    'api_type':'json'
-        }
-        return self.api_call(url,urllib.urlencode(payload))
-
-    def delete_from_reddit(self,thing_id):
-        url = "https://oauth.reddit.com/api/del"
-        payload = urllib.urlencode({'id':thing_id})
-        logging.debug(payload)
-        if self.api_call(url,payload) is not False:
-            return True
-        else:
-            return False
-
-    def get_unread_messages(self):
-        url = "https://oauth.reddit.com/message/unread"
-        unread_messages = self.api_call (url)
-        if unread_messages:
-            return unread_messages
-        else:
-            return False
-
-    def mark_message_read(self,messages):
-        url = "https://oauth.reddit.com/api/read_message"
-        payload = urllib.urlencode({'id':messages})
-        logging.debug(payload)
-        if self.api_call(url,payload) is not False:
-            return True
-        else:
-            return False
-
-    def send_message(self,to,subject,text):
-        url = "https://oauth.reddit.com/api/compose"
-        payload = urllib.urlencode({
-            'to': to,
-            'subject':subject,
-            'text':text,
-            'api_type':'json'
-        })
-        logging.info("Sending the following payload: %s" % payload)
-        return self.api_call(url,payload)
-
-    def update_wiki(self,subreddit,page,content,reason):
-        url = "https://oauth.reddit.com/r/%s/api/wiki/edit" % subreddit
-        payload = urllib.urlencode({
-            'content': content,
-            'page':page,
-            'reason':reason
-        })
-        logging.info("Sending the following payload: %s" % payload)
-        return self.api_call(url,payload)
-
 class Post(ndb.Model):
     post_id = ndb.IntegerProperty()
     post_kind = ndb.StringProperty()
-    comment_id = ndb.IntegerProperty()
+    name = ndb.StringProperty()
+    comment_id = ndb.IntegerProperty(repeated=True)
     author = ndb.StringProperty()
     permalink = ndb.StringProperty()
     subreddit = ndb.StringProperty()
     deleted = ndb.BooleanProperty(default=False)
     movies = ndb.StringProperty(repeated=True)
     post_date = ndb.DateTimeProperty()
-    processed = ndb.BooleanProperty(default=False)
+    processing = ndb.BooleanProperty(default=False)
+    commented = ndb.BooleanProperty(default=False)
     reply_date = ndb.DateTimeProperty(auto_now_add=True)
 
 class IgnoreList(ndb.Model):
@@ -222,84 +69,144 @@ class Blacklisted(ndb.Model):
     updated = ndb.DateTimeProperty(auto_now_add=True)
     updated_by = ndb.StringProperty()
 
-class IMDB:
-
-    def __init__(self, imdb_id=None):
-        if imdb_id is not None:
-            urlfetch.set_default_fetch_deadline(45)
-            self.response = self.api_call("http://www.omdbapi.com/?i=%s&plot=short&r=json&tomatoes=true" % imdb_id)
-            logging.debug("Response is %s" % self.response)
-
-    def api_call(self,url):
-        result = urlfetch.fetch(url)
-        if result.status_code == 200:
-            json_ret = json.loads(result.content)
-            return json_ret
+class PostObject:
+    def __init__(self,post_id,post=None):
+        self.post_id = post_id
+        self.movies_list = []
+        post_key = self.get_post_key()
+        if post_key:
+            logging.info("Data already in DB. Populating the object from DB")
+            # This post is already in the DB
+            self.populate_data()
         else:
-            logging.error("The IMDB Api call returned with status code %d" % result.status_code)
-            return False
-
-    def get_thing(self,thing):
-        if thing in self.response:
-            return self.response[thing]
-        else:
-            return False
-
-def parse_text_for_imdb_ids(text):
-    return re.findall(r'imdb.com/[\w\/]*title/(tt[\d]{7})/?',text)
-
-def get_imgur_album_images(album_id):
-    headers = {"Authorization": "Client-ID "+ cfg['imgur']['client_id']}
-    result = urlfetch.fetch("https://api.imgur.com/3/album/%s/images" % album_id, headers=headers)
-    return json.loads(result.content)
-
-# Returns a CISI object for the movie name given
-# Uses optional IMDB ID to narrow down if there are multiple results
-# Returns False on error or if there is no IMDB match on a long list
-def search_cisi(movie,imdb_id=None,movie_year=None):
-    # Some string replacement on the movie title needed
-    if movie[0] == "+":
-        movie = movie.replace('+','plus ')
-        logging.info("Title starts with +. Renaming movie to %s" %movie)
-    urlfetch.set_default_fetch_deadline(45)
-    result = urlfetch.fetch('http://www.canistream.it/services/search?movieName=%s' % urllib.quote_plus(movie))
-    json_result = json.loads(result.content)
-    if result.status_code != 200:
-        return False
-    # If no imdb link or year, then return first result
-    if imdb_id is None and movie_year is None:
-        logging.info("We have little data to go on. Just returning first Can I Stream It result")
-        return json_result[0]
-    else:
-        for movie in json_result:
-            # If the first movie doesn't have an imdb link, hope it's the right one
-            if 'imdb' not in movie['links']:
-                logging.info("No IMDB link for %s" % movie['title'])
-                logging.info("IMDB says year is %s and CISI says year is %s" % (movie_year,movie['year']))
-                if int(movie_year) == int(movie['year']):
-                    logging.info("IMDB isn't set but Can I Stream it matches year, about...")
-                    return movie
+            if not post:
+                logging.debug("Post data was not provided and not in DB. Need to lookup in DB")
+                # Not in DB and no post_data provided. Need to make API call to get the info
+                post_results = reddit.api_call("https://oauth.reddit.com/api/info.json?id=%s" % post_id)
+                if post_results:
+                    logging.info("Processing for post: %s" % post_id)
+                    post = post_results['data']['children'][0]
+                else:
+                    logging.error("Unable to get results for post %s" % post_id)
+                    # Throw error to get out of here
             else:
-                movie_imdb_id = parse_text_for_imdb_ids(movie['links']['imdb'])
-                if imdb_id == movie_imdb_id[0]:
-                    logging.info("IMDB ID matches with Can I Stream it")
-                    return movie
-    return False
+                logging.debug("Post data provided. Skipping another API request")
+                logging.debug(post)
+            if 'kind' in post:
+                self.kind = post['kind']
+            elif 'kind' in post['data']:
+                self.kind = post['data']
+            else:
+                logging.error("This post has no kind")
+                logging.debug(post_results)
+                # Throw an issue. a post needs a kind
+            self.int_id    = int(post['data']['id'],36)
+            self.author    = post['data']['author']
+            self.post_date = datetime.datetime.fromtimestamp(int(post['data']['created_utc']))
+            self.subreddit = post['data']['subreddit']
+            self.name      = post['data']['name']
+            self.commented   = False
+            self.processing  = False
+            self.link_sources = {}
+            if self.kind == 't3':
+                # this is a post
+                self.permalink = post['data']['permalink']
+                self.link_sources['selftext'] = post['data']['selftext']
+                self.link_sources['url'] = post['data']['url']
+                self.link_sources['title'] = post['data']['title']
+            elif self.kind == 't1':
+                # This is a comment
+                self.permalink = None
+                self.link_sources['body'] = post['data']['body']
+            logging.info("Need to search the link_sources for IMDB links")
+            for link_source in self.link_sources:
+                logging.info(link_source)
+                self.movies_list += parse_text_for_imdb_ids(self.link_sources[link_source])
+            # Cast the list to a set, and then back to a list to get unique movie ids
+            self.movies_list = list(set(self.movies_list))
+            logging.debug(self.movies_list)
+            logging.info("Post of kind %s had id of %d, submitted on %s to the %s subreddit by %s." % (
+                self.kind,
+                self.int_id,
+                self.post_date,
+                self.subreddit,
+                self.author
+            ))
+            self.add_post_to_db()
+        
 
-def get_movie_info(movie_id,movie_type):
-    urlfetch.set_default_fetch_deadline(45)
-    result = urlfetch.fetch('http://www.canistream.it/services/query?movieId=%s&attributes=1&mediaType=%s' % (movie_id, movie_type))
-    return json.loads(result.content)
+    def is_comment(self):
+        if self.kind == 't1':
+            return True
+        else:
+            return False
+    # Adds the post to the database
+    # Returns the key for the post in the DB
+    def add_post_to_db(self):
+        logging.debug("Adding %s to the datastore now" % self.name)
+        post_key = Post(
+            id        = self.name,
+            post_id   = self.int_id,
+            post_kind = self.kind,
+            name      = self.name,
+            movies    = self.movies_list,
+            post_date = self.post_date,
+            author    = self.author,
+            permalink = self.permalink,
+            subreddit = self.subreddit
+        ).put()
 
-def parse_movie_info(results):
-    ret = []
-    for site in results:
-        name = results[site]['friendlyName']
-        if results[site]['price'] > 0:
-            name = "%s - %s" % (results[site]['friendlyName'], results[site]['price'])
-        string = "[%s](%s)" % ( name, results[site]['url'] )
-        ret.append(string.replace(' ','&nbsp;'))
-    return ret
+    def populate_data(self):
+        post_key = self.get_post_key()
+        if post_key:
+            self.int_id      = post_key.post_id
+            self.kind        = post_key.post_kind
+            self.movies_list = post_key.movies
+            self.post_date   = post_key.post_date
+            self.name        = post_key.name
+            self.author      = post_key.author
+            self.permalink   = post_key.permalink
+            self.subreddit   = post_key.subreddit
+            self.commented   = post_key.commented
+            self.processing  = post_key.processing 
+            logging.debug("Got back %s from NDB, so setting self.movies_list to %s" % (post_key.movies,self.movies_list))
+            logging.debug("Got back %s from NDB, so setting self.author to %s" % (post_key.author,self.author))
+            logging.debug("Got back %s from NDB, so setting self.subreddit to %s" % (post_key.subreddit,self.subreddit))
+        else:
+            logging.error("Post Key not found. Can not update anything")
+
+    def get_post_key(self):
+        key = ndb.Key(Post, self.post_id).get()
+        if key:
+            logging.debug("Post key in DB")
+            logging.debug(key)
+            return key
+        else:
+            logging.debug("Post key is not in the DB")
+            return None
+
+    def add_comment_to_post(self,comment_id):
+        post_key = self.get_post_key()
+        if post_key:
+            post_key.comment_id.append(comment_id)
+            post_key.commented = True
+            post_key.put()
+            # Repopulate the data from the DB
+            self.populate_data()
+        else:
+            logging.error("Post Key not found. Can not update with comment")
+
+    def set_processing(self,processing):
+        post_key = self.get_post_key()
+        if post_key:
+            post_key.processing = processing
+            post_key.put()
+            # Repopulate the data from the DB
+            self.populate_data()
+        else:
+            logging.error("Post Key not found. Can not set processing")
+
+
 
 def is_author_ignored(author):
     author_ignored = IgnoreList.query(ndb.AND(
@@ -318,17 +225,8 @@ def author_ignore_key(author):
     else:
         return author_ignored
 
-def get_post_key(int_id,kind):
-    post_lookup = Post.query(ndb.AND(
-        Post.post_kind == kind,
-        Post.post_id == int_id
-    )).get()
-    if not post_lookup:
-        return False
-    else:
-        return post_lookup
-
 def is_listed(list_type,subreddit):
+    logging.debug("Checking to see if %s is %slisted" % (subreddit,list_type))
     if list_type is 'white':
         entity = Whitelisted
     elif list_type is 'black':
@@ -338,12 +236,16 @@ def is_listed(list_type,subreddit):
     if entity:
         listed = entity.query(entity.subreddit == subreddit).get()
         if listed:
+            logging.debug("%s is %slisted. Returning True" % (subreddit,list_type))
             return True
     return False
 
-
+"""
+Takes a list of IMDB ids and returns array of dictionaries
+with the information about each movie
+"""
 def get_movie_data(movies):
-    media_types = cfg['mediatypes']
+    media_types = config.mediatypes
     movies_ret = []
     for imdb_id in movies:
         logging.debug("Looking up information for IMDB id: %s" %imdb_id)
@@ -389,82 +291,46 @@ def get_movie_data(movies):
     # Return Object
     return movies_ret
 
-# Adds the post to the database
-# Returns list of movies if we should comment on the post
-# Returns False if we shouldn't reply to the post
-def add_post_to_db(post,int_id,kind,force=False):
-    movies_list = []
-    should_comment = False
-    permalink = None
-    author = post['data']['author']
-    post_date = datetime.datetime.fromtimestamp(int(post['data']['created_utc']))
-    subreddit = post['data']['subreddit']
-    post_lookup = get_post_key(int_id,kind)
-    # If this post is not in the DB
-    if not post_lookup:
-        logging.info("Need to process post in the %s subreddit" % subreddit)
-        list_of_movies = []
-        if kind == 't3':
-            # this is a post
-            permalink = post['data']['permalink']
-            list_of_movies = parse_text_for_imdb_ids(post['data']['selftext'])
-            list_of_movies += parse_text_for_imdb_ids(post['data']['url'])
-            list_of_movies += parse_text_for_imdb_ids(post['data']['title'])
-        elif kind == 't1':
-            # This is a comment
-            permalink = post['data']['context']
-            list_of_movies = parse_text_for_imdb_ids(post['data']['body'])
-        movies_list = list(set(list_of_movies))
-        # We want to keep a list of the movies, even if we shouldn't comment        
-        post_key = Post(
-            post_id = int_id,
-            post_kind = kind,
-            post_date = post_date,
-            author = author,
-            permalink = permalink,
-            subreddit = subreddit,
-            movies = movies_list
-        ).put()
-        logging.info("Finished processing post in the %s subreddit" % subreddit)
-    else:
-        movies_list = post_lookup.movies
-    # We shouldn't comment on this post if the subreddit is not whitelisted
-    # If we don't have any whitelisted subreddits, then we shouldn't comment
-    if kind == 't3' and (is_listed('white',subreddit) or force is True):
-            should_comment = True
-    # We shouldn't comment on a summon if the subreddit is blacklisted
-    # If we don't have a list of blacklisted subreddits, then we're good to comment
-    elif kind == 't1' and not is_listed('black',subreddit):
-        should_comment = True
-    # If this user isn't on the ignore list 
-    # or we shouldn't comment
-    if is_author_ignored(author) or should_comment is False:
-        # If we're not going to comment, then we need to mark 
-        # processed as true to avoid checking this one again
-        return False
-    else:
-        return movies_list
+"""
+Given a post, determines if we should comment
+- Returns True if we should comment
+- Returns False if we shouldn't comment on post
+"""
 
-def comment_on_post(post, force=False):
-    comment_id = None
-    error_commenting = False
-    if 'kind' in post:
-        kind = post['kind']
-    elif 'kind' in post['data']:
-        kind = post['data']
-    else:
-        logging.error("Could not find a kind in post: %s" % post)
+def should_comment(post,forced=False,summoned=False):
+    # If forced, return true
+    if forced is True:
+        logging.info("Forced is true. I don't care about anything else. Should comment")
+        return True
+    # If summoned and subreddit isn't blacklisted, return True
+    elif summoned is True and is_listed('black',post.subreddit) is False:
+        logging.info("I was summoned and the subreddit is not blacklisted. Should comment")
+        return True
+    # If user is on ignore list, return false
+    elif is_author_ignored(post.author):
+        logging.info("Author is on the ignore list. Should not comment")
         return False
-    int_id = int(post['data']['id'],36)
-    name = post['data']['name']
-    movies_list = add_post_to_db(post,int_id,kind,force)
-    if movies_list is not False:
-        post_key = get_post_key(int_id,kind)
-        # Only continue if we haven't processed this post
-        # Even if forced, we can only comment on a post once
-        if post_key.processed == True:
-            logging.info("We've already commented on %s before. Can not comment again" % name)
-            return False
+    # If subreddit is on whitelist, return true
+    elif is_listed('white',post.subreddit) is True:
+        logging.info("Subreddit is on the whitelist. Should comment")
+        return True
+    else:
+        logging.info("Subreddit isn't on the whitelist. Should not comment")
+        return False
+
+"""
+Given a post, need to do the following:
+- search Can I Stream it
+- format comment
+- reply to the post
+"""
+def comment_on_post(post, summoned=False):
+    name = post.name
+    movies_list = post.movies_list
+    # Set this post to processing
+    post.set_processing(True)
+    if movies_list is not None:
+        logging.info(movies_list)
         # We should comment on this post
         movies_data = get_movie_data(movies_list)
         # If we got valid movie data back
@@ -472,50 +338,67 @@ def comment_on_post(post, force=False):
             comment_text = format_new_post(movies_data)
             # If the comment text has info
             if comment_text is not False:
-                new_post_result =  reddit.post_to_reddit(name,comment_text,'comment')
-                # If the comment was posted sucessfully
-                if new_post_result:
-                    if not new_post_result['json']['errors']:
-                        comment_id = int(new_post_result['json']['data']['things'][0]['data']['id'],36)
-                        # get the name of the comment
-                        comment_name = new_post_result['json']['data']['things'][0]['data']['name']
-                        updated_comment_text = comment_text.format(thing_id=comment_name)
-                        reddit.post_to_reddit(comment_name,updated_comment_text,'editusertext')
-                    else:
-                        # Set comment id to 0 and let this get put in the DB, so we don't try it again
-                        logging.error("Received the following error when trying to comment: %s" % new_post_result['json']['errors'])
-                else:
-                    error_commenting = True
-                    logging.error("Couldn't comment. Not marking this as commented in DB")
+                submit_comment(post,comment_text)
+            elif summoned is True:
+                logging.info("No links to provide to the user, but summoned. Show them links")
+                comment_text = "Sorry, I couldn't find any links to streaming, rental, or purchase sites. Perhaps the movie is too new"
+                submit_comment(post,comment_text)
             else:
-                logging.warning("No links to provide to the user for post %s" % name)
+                logging.info("No links to provide to the user, and not summoned. Not commenting")
+        elif summoned is True:
+            logging.info("No movie data was found for post but I was summoned. Need to update with sad comment")
+            comment_text = "Sorry, I was unable to find any movies in this post"
+            submit_comment(post,comment_text)
         else:
-            logging.warning("No movie data was found for post %s" % name)
-        if not error_commenting:
-                post_key.comment_id = comment_id
-                post_key.processed = True
-                post_key.put()
-                logging.info("Added %s to the db. Will not comment on this post again" % name)
-        else:
-            logging.warning("An error was encountered with %s. Not adding this post to the DB in hope a subsequent run will fix the issue" % name)
+            logging.info("No movie data and not summoned. Not commenting")
     else:
-        logging.info("Reply on %s skipping." % (name))
+        logging.debug("No movies to comment on. Reply skipping.")
+    # Unset processing
+    post.set_processing(False)
+
+"""
+Replies to a post with the comment text provided
+Adds the reply to the DB and edits the comment for the delete button
+"""
+def submit_comment(post,comment_text):
+    name = post.name
+    new_post_result =  reddit.post_to_reddit(name,comment_text,'comment')
+    # If the comment was posted sucessfully
+    if new_post_result:
+        if not new_post_result['json']['errors']:
+            comment_id = int(new_post_result['json']['data']['things'][0]['data']['id'],36)
+            # get the name of the comment
+            comment_name = new_post_result['json']['data']['things'][0]['data']['name']
+            updated_comment_text = comment_text.format(thing_id=comment_name)
+            reddit.post_to_reddit(comment_name,updated_comment_text,'editusertext')
+            logging.info("Adding to the db. Will not comment on this post again")
+            post.add_comment_to_post(comment_id)
+        else:
+            # Set comment id to 0 and let this get put in the DB, so we don't try it again
+            logging.error("Received the following error when trying to comment: %s" % new_post_result['json']['errors'])
+    else:
+        logging.error("Couldn't comment. Not marking this as commented in DB")
 
 def format_new_post(movies_data):
-    default_media_types = cfg['mediatypes']
+    default_media_types = config.mediatypes
     media_types=[]
+    friendly_names=[]
     # Check for which types have information
     # This limits it so that if we don't have
     # Information for all movies for a certain type,
     # then we won't include a blank column
-    for media_type in default_media_types:
+    for media_type,friendly_name in default_media_types.iteritems():
         type_in_data = False
         for movie in movies_data:
             if movie[media_type]:
                 type_in_data = True
         if type_in_data:
             media_types.append(media_type)
-    ret_line = ["Here's where you can stream/rent/buy the movie(s) listed:\n\n"]
+            friendly_names.append(friendly_name)
+    pulral = ''
+    if len(movies_data) > 1:
+        pulral = 's'
+    ret_line = ["Here's where you can %s the movie%s listed:\n\n" % ('/'.join(friendly_names),pulral)]
     heading = ['Title','IMDB','Rotten Tomatoes']
     heading += media_types
     seperator = []
@@ -551,7 +434,10 @@ def format_new_post(movies_data):
             line.append(type_joined)
         ret_line.append('|'.join(line))
     if excluded_movies:
-        ret_line.append("\nNo streaming, rental, or purchase info for: "+' , '.join(excluded_movies))
+        ret_line.append("\nNo %s info for: %s" % (
+            ' , '.join(default_media_types.keys()),
+            ' , '.join(excluded_movies)
+        ))
     ret_line.append('\n---\n' + ' ^| '.join(['^' + a for a in SIG_LINKS]))
     # If we don't have streams for any movies, we shouldn't comment
     # Only return the formatted text if we have useful info
@@ -645,13 +531,13 @@ def add_to_list(message):
                 old_entity.key.delete()
             logging.info("%s is now %slisted because of %s" % (subreddit,list_type,author))
             subreddit_mods = "/r/%s" %subreddit
-            reply_subject = "%s added to /u/moviesbot %s" % (subreddit_mods,subject)
+            reply_subject = "%s added to /u/%s %s" % (subreddit_mods,config.reddit['user'],subject)
             response = (
                 "This message is to inform you that the request by %s "
-                "to %s /r/%s has been processed. /u/moviesbot will respect "
+                "to %s /r/%s has been processed. /u/%s will respect "
                 "this decision moving forward. You can find out more "
-                "about what this means by refering to [this wiki](%s)"
-                % (author,subject,subreddit,REDDIT_PM_MODS)
+                "about what this means by referring to [this wiki](%s)"
+                % (author,subject,subreddit,config.reddit['user'],REDDIT_PM_MODS)
             )
             reddit.send_message(subreddit_mods,reply_subject,response)
     else:
@@ -670,6 +556,7 @@ def delete_message(message):
     if thing_type == "t1":
         # This thing is a comment
         # Lookup this thing in the DB
+        logging.debug("Searching for a post with a comment of %s" % thing_id)
         post = Post.query(Post.comment_id == thing_id).get()
         if post:
             original_author = post.author
@@ -680,53 +567,91 @@ def delete_message(message):
                 reddit.delete_from_reddit(thing_name)
                 post.deleted = True
                 post.put()
-                response =  (
-                    "Ok, I deleted my comment on your post. Sorry about that. "
-                    "If you never want me to respond to you again, I understand. you can always send "
-                    "[a message](%s), and I'll never "
-                    "ever respond to your post, I promise. Also, if you wouldn't mind filling out "
-                    "[this survey](%s) giving me feedback, "
-                    "I'd really appreciate it. It would make me a better bot" %
-                    (REDDIT_PM_IGNORE,REDDIT_PM_FEEDBACK)
-                )
+                response =  textwrap.dedent("""
+                    Ok, I deleted my comment on your post. Sorry about that. 
+                    If you never want me to respond to you again, I understand. you can always send 
+                    [a message](%s), and I'll never ever respond to your post, 
+                    I promise. Also, if you wouldn't mind filling out 
+                    [this survey](%s) giving me feedback, I'd really appreciate 
+                    it. It would make me a better bot.
+                    """ % (REDDIT_PM_IGNORE,REDDIT_PM_FEEDBACK))
             else:
                 # Delete request isn't from OP. Don't delete
                 logging.info("%s isn't the OP. Will not delete %s" % (author,thing_name))
         else:
             # Probably shoudn't error in this case
-            logging.error("Couldn't find a post corrsponding to %s in the DB" % thing_name)
+            logging.info("Couldn't find a post corresponding to %s in the DB" % thing_name)
     else:
         # Probably shoudn't error in this case
-        logging.error("Received Delete request for unknown thing type %s" % thing_type)
+        logging.info("Received Delete request for unknown thing type %s" % thing_type)
     return response
 
 reddit = Reddit()
 
-def search_process_reddit_posts(query,force=False):
+def search_process_reddit_posts(query,summoned=False):
+    logging.debug("Searching Reddit with the following query: %s. Summoned is %s" % (query,summoned))
     search_results = reddit.search_reddit(query)
     if search_results:
         for post in search_results['data']['children']:
-            comment_on_post(post,force)
+            logging.debug(post)
+            taskqueue.add(
+                url='/tasks/process_post',
+                queue_name='processPost',
+                params={
+                    'post': post['data']['name'],
+                    'summoned':summoned,
+                    'post_data':json.dumps(post),
+                }
+            )
 
 # Performs a search for posts with imdb links in the title,
 # selftext, and url. For each post, send to comment on post
 class search_imdb(webapp2.RequestHandler):
     def get(self):
-        search_process_reddit_posts("title%3Aimdb.com+OR+url%3Aimdb.com+OR+imdb.com")
+        search_process_reddit_posts("title%3Aimdb.com+OR+url%3Aimdb.com+OR+imdb.com&t=hour")
 
 class search_usermention(webapp2.RequestHandler):
     def get(self):
         search_process_reddit_posts(
-            "title%3A/u/{u}+OR+url%3A/u/{u}+OR+/u/{u}".format(u=cfg['reddit']['user']),
-            force=True
+            "title%3A/u/{u}+OR+url%3A/u/{u}+OR+/u/{u}".format(u=config.reddit['user']),
+            summoned=True
         )
 
 class manual_process(webapp2.RequestHandler):
     def get(self,post_id):
-        post_results = reddit.api_call("https://oauth.reddit.com/comments/%s.json" % post_id)
-        if post_results:
-            logging.info("Forcing processing on post %s" % post_id)
-            comment_on_post(post_results[0]['data']['children'][0],force=True)
+        logging.info("Forcing processing on post %s" % post_id)
+        # Add the task to the default queue.
+        taskqueue.add(
+            url='/tasks/process_post',
+            queue_name='processPost',
+            params={
+                'post': post_id,
+                'forced':True
+            }
+        )
+
+class process_post(webapp2.RequestHandler):
+    def post(self):
+        post_id   = self.request.get('post')
+        forced    = True if self.request.get('forced')   == 'True' else False
+        summoned  = True if self.request.get('summoned') == 'True' else False
+        post_data = self.request.get('post_data')
+        if post_data:
+            post_data = json.loads(post_data)
+        # Check that the post id is formatted properly
+        logging.info("Begin processing post with name: %s. Forced is %s and summoned is %s" % (post_id,forced,summoned))
+        logging.debug(post_data)
+        post = PostObject(post_id,post_data)
+        if post.processing is False:
+            if post.commented is False or forced is True:
+                if should_comment(post=post,forced=forced,summoned=summoned):
+                    comment_on_post(post,summoned)
+                else:
+                    logging.info("Determined I shouldn't comment on this post for one reason or another")
+            else:
+                logging.info("I've already commented on this post. Not commenting this time")
+        else:
+            logging.info("This post is already being processed")
 
 # Reads unread messages from the inbox. 
 class read_messages(webapp2.RequestHandler):
@@ -741,11 +666,24 @@ class read_messages(webapp2.RequestHandler):
                 author = message['data']['author']
                 name = message['data']['name']
                 if message['data']['was_comment']:
-                    if 'subject' in message['data'] and message['data']['subject'] == "username mention":
-                        subreddit = message['data']['subreddit']
-                        logging.info("Got username mention in the %s subreddit" % subreddit)
-                        # Check if mention was in blacklisted subreddit
-                        comment_on_post(message)
+                    if 'subject' in message['data']:
+                        subject = message['data']['subject']
+                        if subject == 'username mention':
+                            post_id = message['data']['name']
+                            logging.info("Got username mention")
+                            taskqueue.add(
+                                url='/tasks/process_post',
+                                queue_name='processPost',
+                                params={
+                                    'post'     : post_id,
+                                    'summoned' : True,
+                                    'post_data': json.dumps(message)
+                                }
+                            )
+                        elif subject == 'comment reply':
+                            logging.info("Got a comment reply. I don't know how to handle this. I need a human")
+                        else:
+                            logging.info("Got a comment with subject %s. I need a human." % subject)
                 else:
                     subject = message['data']['subject'].lower()
                     logging.info("Got a message from %s with the subject %s" % (author,subject))
@@ -755,6 +693,8 @@ class read_messages(webapp2.RequestHandler):
                         response = add_to_list(message['data'])
                     elif subject == "delete":
                         response = delete_message(message['data'])
+                    else:
+                        logging.info("Got a random message. I don't know how to handle this. I need a human.")
                 # Mark message as read
                 if reddit.mark_message_read(name):
                     if response is not None:
@@ -786,6 +726,7 @@ application = webapp2.WSGIApplication([
     ('/tasks/search/imdb', search_imdb),
     ('/tasks/search/user', search_usermention),
     ('/tasks/manual/(\w+)', manual_process),
+    ('/tasks/process_post', process_post),
     ('/tasks/inbox', read_messages),
     ('/tasks/wiki', update_wiki_lists)
 ],
