@@ -20,9 +20,9 @@ rottentomatoes:
 # Which mediatypes should be included 
 # the in comments
 mediatypes:
- - Streaming
- - Rental
- - Purchase
+    Streaming: Stream
+    Rental: Rent
+    Purchase: Buy
 # - DVD
 # - Xfinity
 
