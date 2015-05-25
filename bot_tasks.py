@@ -12,7 +12,7 @@ from google.appengine.api import taskqueue
 
 from modules.reddit import Reddit
 from modules.imdb import IMDB
-from modules import search_cisi, get_movie_info, parse_movie_info, parse_text_for_imdb_ids
+from modules import search_cisi, get_movie_info, parse_movie_info, parse_text_for_imdb_ids, parse_text_for_rt_ids, rotten_tomatoes_2_imdb
 
 from uuid import uuid4
 
@@ -73,6 +73,7 @@ class PostObject:
     def __init__(self,post_id,post=None):
         self.post_id = post_id
         self.movies_list = []
+        rotten_tomatoes = []
         post_key = self.get_post_key()
         if post_key:
             logging.info("Data already in DB. Populating the object from DB")
@@ -122,6 +123,7 @@ class PostObject:
             for link_source in self.link_sources:
                 logging.info(link_source)
                 self.movies_list += parse_text_for_imdb_ids(self.link_sources[link_source])
+                self.movies_list += rotten_tomatoes_2_imdb(parse_text_for_rt_ids(self.link_sources[link_source]))
             # Cast the list to a set, and then back to a list to get unique movie ids
             self.movies_list = list(set(self.movies_list))
             logging.debug(self.movies_list)
@@ -259,7 +261,7 @@ def get_movie_data(movies):
             logging.warning("Couldn't get IMDB info for IMDB id: %s" %imdb_id)
             continue
         if imdb_obj.get_thing('Type') != "movie":
-            logging.warning("%s is not a movie. Not going to proceed with this title" % imdb_title)
+            logging.info("%s is not a movie. Not going to proceed with this title" % imdb_title)
             continue
         # Get IMDB Rating
         imdb_rating = imdb_obj.get_thing('imdbRating')
