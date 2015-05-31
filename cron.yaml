@@ -11,3 +11,6 @@ cron:
 - description: Updates the blacklist and whitelist wiki
   url: /tasks/wiki
   schedule: every 1 hours
+- description: Checks recent comments for changes
+  url: /tasks/check_comments
+  schedule: every 1 hours

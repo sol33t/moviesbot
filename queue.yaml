@@ -6,4 +6,12 @@ queue:
     max_backoff_seconds: 600
     max_doublings: 0
     task_retry_limit: 10
-    task_age_limit: 2d
+    task_age_limit: 2d   
+- name: reviewComment
+  rate: 1/s
+  retry_parameters:
+    min_backoff_seconds: 30
+    max_backoff_seconds: 300
+    max_doublings: 0
+    task_retry_limit: 10
+    task_age_limit: 1h

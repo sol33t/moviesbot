@@ -39,16 +39,26 @@ SIG_LINKS = [
 class Post(ndb.Model):
     post_id = ndb.IntegerProperty()
     post_kind = ndb.StringProperty()
-    name = ndb.StringProperty()
-    comment_id = ndb.IntegerProperty(repeated=True)
+    name = ndb.StringProperty(indexed=True)
     author = ndb.StringProperty()
     permalink = ndb.StringProperty()
     subreddit = ndb.StringProperty()
-    deleted = ndb.BooleanProperty(default=False)
     movies = ndb.StringProperty(repeated=True)
     post_date = ndb.DateTimeProperty()
     processing = ndb.BooleanProperty(default=False)
     commented = ndb.BooleanProperty(default=False)
+    added = ndb.DateTimeProperty(auto_now_add=True)
+
+class Comment(ndb.Model):
+    name = ndb.StringProperty()
+    post_date = ndb.DateTimeProperty(auto_now_add=True)
+    score = ndb.IntegerProperty()
+    deleted = ndb.BooleanProperty(default=False)
+    updated = ndb.DateTimeProperty(auto_now=True)
+    revision = ndb.IntegerProperty()
+
+class CommentRevisions(ndb.Model):
+    body = ndb.TextProperty()
     reply_date = ndb.DateTimeProperty(auto_now_add=True)
 
 class IgnoreList(ndb.Model):
@@ -73,7 +83,6 @@ class PostObject:
     def __init__(self,post_id,post=None):
         self.post_id = post_id
         self.movies_list = []
-        rotten_tomatoes = []
         post_key = self.get_post_key()
         if post_key:
             logging.info("Data already in DB. Populating the object from DB")
@@ -101,7 +110,6 @@ class PostObject:
                 logging.error("This post has no kind")
                 logging.debug(post_results)
                 # Throw an issue. a post needs a kind
-            self.int_id    = int(post['data']['id'],36)
             self.author    = post['data']['author']
             self.post_date = datetime.datetime.fromtimestamp(int(post['data']['created_utc']))
             self.subreddit = post['data']['subreddit']
@@ -127,9 +135,9 @@ class PostObject:
             # Cast the list to a set, and then back to a list to get unique movie ids
             self.movies_list = list(set(self.movies_list))
             logging.debug(self.movies_list)
-            logging.info("Post of kind %s had id of %d, submitted on %s to the %s subreddit by %s." % (
+            logging.info("Post of kind %s had id of %s, submitted on %s to the %s subreddit by %s." % (
                 self.kind,
-                self.int_id,
+                self.name,
                 self.post_date,
                 self.subreddit,
                 self.author
@@ -148,7 +156,6 @@ class PostObject:
         logging.debug("Adding %s to the datastore now" % self.name)
         post_key = Post(
             id        = self.name,
-            post_id   = self.int_id,
             post_kind = self.kind,
             name      = self.name,
             movies    = self.movies_list,
@@ -161,7 +168,6 @@ class PostObject:
     def populate_data(self):
         post_key = self.get_post_key()
         if post_key:
-            self.int_id      = post_key.post_id
             self.kind        = post_key.post_kind
             self.movies_list = post_key.movies
             self.post_date   = post_key.post_date
@@ -187,10 +193,21 @@ class PostObject:
             logging.debug("Post key is not in the DB")
             return None
 
-    def add_comment_to_post(self,comment_id):
+    def add_comment_to_post(self,comment_id,body):
         post_key = self.get_post_key()
         if post_key:
-            post_key.comment_id.append(comment_id)
+            comment_key = Comment(
+                id = comment_id,
+                parent = post_key.key,
+                name = comment_id,
+                score = 1,
+                revision = 0
+            ).put()
+            comment_rev_key = CommentRevisions(
+                id = '0',
+                parent = comment_key,
+                body = body
+            ).put()
             post_key.commented = True
             post_key.put()
             # Repopulate the data from the DB
@@ -207,8 +224,6 @@ class PostObject:
             self.populate_data()
         else:
             logging.error("Post Key not found. Can not set processing")
-
-
 
 def is_author_ignored(author):
     author_ignored = IgnoreList.query(ndb.AND(
@@ -256,6 +271,11 @@ def get_movie_data(movies):
         imdb_obj = IMDB(imdb_id)
         imdb_title = imdb_obj.get_thing('Title')
         imdb_year = imdb_obj.get_thing('Year')
+        imdb_release = imdb_obj.get_thing('DVD')
+        if imdb_release != 'N/A':
+            imdb_dvd_date = datetime.datetime.strptime(imdb_obj.get_thing('DVD'), '%d %b %Y')
+            if datetime.datetime.now() < imdb_dvd_date:
+                logging.info("Looks like the DVD hasn't come out yet. Perhaps we should not include this movie")
         rt_tomatometer = imdb_obj.get_thing('tomatoMeter')
         if imdb_title is False:
             logging.warning("Couldn't get IMDB info for IMDB id: %s" %imdb_id)
@@ -368,18 +388,30 @@ def submit_comment(post,comment_text):
     # If the comment was posted sucessfully
     if new_post_result:
         if not new_post_result['json']['errors']:
-            comment_id = int(new_post_result['json']['data']['things'][0]['data']['id'],36)
             # get the name of the comment
             comment_name = new_post_result['json']['data']['things'][0]['data']['name']
-            updated_comment_text = comment_text.format(thing_id=comment_name)
-            reddit.post_to_reddit(comment_name,updated_comment_text,'editusertext')
             logging.info("Adding to the db. Will not comment on this post again")
-            post.add_comment_to_post(comment_id)
+            post.add_comment_to_post(comment_name,comment_text)
+            update_comment(name,comment_name,comment_text)
         else:
             # Set comment id to 0 and let this get put in the DB, so we don't try it again
             logging.error("Received the following error when trying to comment: %s" % new_post_result['json']['errors'])
     else:
         logging.error("Couldn't comment. Not marking this as commented in DB")
+
+def update_comment(post_id,comment_id,body):
+    comment_key = ndb.Key(Post, post_id, Comment, comment_id)
+    comment = comment_key.get()
+    rev = comment.revision+1;
+    updated_comment_text = body.format(thing_id=comment_id)
+    reddit.post_to_reddit(comment_id,updated_comment_text,'editusertext')
+    comment_rev_key = CommentRevisions(
+        id = str(rev),
+        parent = comment_key,
+        body = updated_comment_text
+    ).put()
+    comment.revision = rev
+    comment.put()
 
 def format_new_post(movies_data):
     default_media_types = config.mediatypes
@@ -550,25 +582,28 @@ def delete_message(message):
     response = None
     author = message['author']
     body = message['body']
-    body_regex = re.search(r'delete ((t\d+)_(\w+))',body)
-    thing_name = body_regex.group(1)
+    body_regex = re.search(r'delete ((t\d)_(\w+))',body)
+    thing_name = str(body_regex.group(1))
     thing_type = body_regex.group(2)
-    thing_id = int(body_regex.group(3),36)
     # Figure out what the thing they want us to delete is
     if thing_type == "t1":
         # This thing is a comment
         # Lookup this thing in the DB
-        logging.debug("Searching for a post with a comment of %s" % thing_id)
-        post = Post.query(Post.comment_id == thing_id).get()
-        if post:
+        logging.debug("Searching for a post with a comment of %s" % thing_name)
+        comments = Comment.query(
+            Comment.name == thing_name,
+        ).fetch()
+        for comment in comments:
+            logging.debug(comment)
+            post = comment.key.parent().get()
             original_author = post.author
             # If the author is the same as the author in question
             if original_author == author:
                 logging.info("Message from %s matches OP %s. Will delete %s" %(author,original_author,thing_name))
                 # Delete post
                 reddit.delete_from_reddit(thing_name)
-                post.deleted = True
-                post.put()
+                comment.deleted = True
+                comment.put()
                 response =  textwrap.dedent("""
                     Ok, I deleted my comment on your post. Sorry about that. 
                     If you never want me to respond to you again, I understand. you can always send 
@@ -580,11 +615,7 @@ def delete_message(message):
             else:
                 # Delete request isn't from OP. Don't delete
                 logging.info("%s isn't the OP. Will not delete %s" % (author,thing_name))
-        else:
-            # Probably shoudn't error in this case
-            logging.info("Couldn't find a post corresponding to %s in the DB" % thing_name)
     else:
-        # Probably shoudn't error in this case
         logging.info("Received Delete request for unknown thing type %s" % thing_type)
     return response
 
@@ -707,6 +738,76 @@ class read_messages(webapp2.RequestHandler):
         else:
             logging.error("Error getting unread messages")
 
+class review_comment(webapp2.RequestHandler):
+    def post(self):
+        comment_id = self.request.get('comment_id')
+        post_id    = self.request.get('post_id')
+        logging.info("Need to do a checkup on comment %s" % comment_id)
+        comment_key = ndb.Key(Post, post_id, Comment, comment_id)
+        logging.debug(comment_key)
+        comment = comment_key.get()
+        if not comment:
+            logging.error("Couldn't find comment %s in the DB" % comment_id)
+            return None
+        comment_revision_num = comment.revision
+        revision_key = ndb.Key(Post, post_id, Comment, comment_id, CommentRevisions, str(comment_revision_num))
+        post_results = reddit.api_call("https://oauth.reddit.com/api/info.json?id=%s" % comment_id)
+        if post_results:
+            if post_results['data']['children']:
+                comment_data = post_results['data']['children'][0]
+                logging.debug("Got back the following data for comment: %s. Data: %s" % (comment_id,comment_data))
+                score = comment_data['data']['score']
+                comment.score = score
+                logging.info("Comment %s has a score of %d" % (comment_id,score))
+                if score < -2: # TODO: Remove this hardcoded threshold
+                    logging.info("Deleting comment %s because of a low score" % comment_id)
+                    # This score is less than what we want. Delete the post
+                    reddit.delete_from_reddit(comment_id)
+                    comment.deleted = True
+                    logging.info("Comment %s is deleted" % comment_id)
+                else:
+                    comment_revision = revision_key.get()
+                    if not comment_revision:
+                        logging.error("Couldn't find revision %d for comment %s" % (comment_revision_num,comment_id))
+                        return None
+                    logging.info("Need to check if we should recheck the contents of this post")
+                    post = ndb.Key(Post, post_id).get()
+                    orig_text = comment_revision.body
+                    updated_text = format_new_post(get_movie_data(post.movies))
+                    if updated_text is not False and len(updated_text) > len(orig_text):
+                        logging.info("The updated text is more than what we originally commented on. Perhaps we should edit the comment")
+                        # Edit the comment, and update the revision in the DB
+                        update_comment(post_id,comment_id,updated_text)
+                        logging.debug("New comment text is %s. Old text was %s" % (updated_text,orig_text))
+                    else:
+                        logging.info("No need to edit the comment since updated text is not longer than what we have")
+                comment.put()
+            else:
+                logging.warning("No children returned when searching for comment: %s" % comment_id)
+        else:
+            logging.error("Unable to get results for comment %s" % comment_id)
+            # Throw error to get out of here
+
+class check_comments(webapp2.RequestHandler):
+    def get(self):
+        date_search = datetime.datetime.now() - datetime.timedelta(days=7)
+        comments = Comment.query(ndb.AND(
+            Comment.post_date > date_search,
+            Comment.deleted == False,
+        )).fetch()
+        for comment in comments:
+            logging.debug(comment)
+            post = comment.key.parent().get()
+            logging.debug("The key for this comment is %s and parent is %s" % (comment.key,post.name))
+            taskqueue.add(
+                url='/tasks/review_comment',
+                queue_name='reviewComment',
+                params={
+                    'comment_id' : comment.name,
+                    'post_id'    : post.name,
+                }
+            )
+
 class update_wiki_lists(webapp2.RequestHandler):
     def get(self):
         subreddit = cfg['subreddit']
@@ -728,8 +829,10 @@ application = webapp2.WSGIApplication([
     ('/tasks/search/imdb', search_imdb),
     ('/tasks/search/user', search_usermention),
     ('/tasks/manual/(\w+)', manual_process),
+    ('/tasks/review_comment', review_comment),
     ('/tasks/process_post', process_post),
     ('/tasks/inbox', read_messages),
+    ('/tasks/check_comments',check_comments),
     ('/tasks/wiki', update_wiki_lists)
 ],
     debug=True
