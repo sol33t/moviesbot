@@ -9,6 +9,9 @@ handlers:
 - url: /tasks/.*
   script: bot_tasks.application
   login: admin
+- url: /migrations/.*
+  script: migrations.application
+  login: admin
 
 libraries:
 - name: webapp2
