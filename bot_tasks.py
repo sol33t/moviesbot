@@ -7,14 +7,18 @@ import re
 import json
 import textwrap
 
+from protorpc import messages
+from protorpc import message_types
+
 from google.appengine.ext import ndb
 from google.appengine.api import taskqueue
+from google.appengine.ext.ndb import msgprop
 
 from modules.reddit import Reddit
 from modules.imdb import IMDB
-from modules import search_cisi, get_movie_info, parse_movie_info, parse_text_for_imdb_ids, parse_text_for_rt_ids, rotten_tomatoes_2_imdb
+from modules import get_movie_info, parse_movie_info, parse_text_for_imdb_ids, parse_text_for_rt_ids, rotten_tomatoes_2_imdb
 
-from uuid import uuid4
+from modules.models import Movies, Post, Comment, CommentRevisions, IgnoreList, Whitelisted, Blacklisted
 
 REDDIT_PM_IGNORE   = "http://www.reddit.com/message/compose/?to={username}&subject=IGNORE%20ME&message=[IGNORE%20ME](http://i.imgur.com/s2jMqQN.jpg\)".format(username=config.reddit['user'])
 REDDIT_PM_REMEMBER = "http://www.reddit.com/message/compose/?to={username}&subject=REMEMBER%20ME&message=I%20made%20a%20mistake%20I%27m%20sorry,%20will%20you%20take%20me%20back".format(username=config.reddit['user'])
@@ -35,49 +39,6 @@ SIG_LINKS = [
     ('Created{s}and{s}maintained{s}by{s}/u/stevenviola').format(s=NO_BREAK_SPACE),
     '[](#bot)'
 ]
-
-class Post(ndb.Model):
-    post_id = ndb.IntegerProperty()
-    post_kind = ndb.StringProperty()
-    name = ndb.StringProperty(indexed=True)
-    author = ndb.StringProperty()
-    permalink = ndb.StringProperty()
-    subreddit = ndb.StringProperty()
-    movies = ndb.StringProperty(repeated=True)
-    post_date = ndb.DateTimeProperty()
-    processing = ndb.BooleanProperty(default=False)
-    commented = ndb.BooleanProperty(default=False)
-    added = ndb.DateTimeProperty(auto_now_add=True)
-
-class Comment(ndb.Model):
-    name = ndb.StringProperty()
-    post_date = ndb.DateTimeProperty(auto_now_add=True)
-    score = ndb.IntegerProperty()
-    deleted = ndb.BooleanProperty(default=False)
-    updated = ndb.DateTimeProperty(auto_now=True)
-    revision = ndb.IntegerProperty()
-
-class CommentRevisions(ndb.Model):
-    body = ndb.TextProperty()
-    reply_date = ndb.DateTimeProperty(auto_now_add=True)
-
-class IgnoreList(ndb.Model):
-    author = ndb.StringProperty()
-    ignored = ndb.BooleanProperty(default=True)
-    body = ndb.TextProperty()
-    message_id = ndb.IntegerProperty()
-    message_date = ndb.DateTimeProperty()
-    update_date = ndb.DateTimeProperty(auto_now_add=True)
-
-class Whitelisted(ndb.Model):
-    subreddit = ndb.StringProperty()
-    updated = ndb.DateTimeProperty(auto_now_add=True)
-    updated_by = ndb.StringProperty()
-
-class Blacklisted(ndb.Model):
-    subreddit = ndb.StringProperty()
-    updated = ndb.DateTimeProperty(auto_now_add=True)
-    updated_by = ndb.StringProperty()
 
 class PostObject:
     def __init__(self,post_id,post=None):
@@ -134,6 +95,9 @@ class PostObject:
                 self.movies_list += rotten_tomatoes_2_imdb(parse_text_for_rt_ids(self.link_sources[link_source]))
             # Cast the list to a set, and then back to a list to get unique movie ids
             self.movies_list = list(set(self.movies_list))
+            self.movies = []
+            for movie in self.movies_list:
+                self.movies.append(ndb.Key(Movies, movie))
             logging.debug(self.movies_list)
             logging.info("Post of kind %s had id of %s, submitted on %s to the %s subreddit by %s." % (
                 self.kind,
@@ -143,7 +107,6 @@ class PostObject:
                 self.author
             ))
             self.add_post_to_db()
-        
 
     def is_comment(self):
         if self.kind == 't1':
@@ -155,21 +118,22 @@ class PostObject:
     def add_post_to_db(self):
         logging.debug("Adding %s to the datastore now" % self.name)
         post_key = Post(
-            id        = self.name,
-            post_kind = self.kind,
-            name      = self.name,
-            movies    = self.movies_list,
-            post_date = self.post_date,
-            author    = self.author,
-            permalink = self.permalink,
-            subreddit = self.subreddit
+            id          = self.name,
+            post_kind   = self.kind,
+            name        = self.name,
+            movies      = self.movies,
+            movies_list = self.movies_list,
+            post_date   = self.post_date,
+            author      = self.author,
+            permalink   = self.permalink,
+            subreddit   = self.subreddit
         ).put()
 
     def populate_data(self):
         post_key = self.get_post_key()
         if post_key:
             self.kind        = post_key.post_kind
-            self.movies_list = post_key.movies
+            self.movies_list = post_key.movies_list
             self.post_date   = post_key.post_date
             self.name        = post_key.name
             self.author      = post_key.author
@@ -269,37 +233,26 @@ def get_movie_data(movies):
         movie_obj = {}
         # Lookup IMDB name
         imdb_obj = IMDB(imdb_id)
-        imdb_title = imdb_obj.get_thing('Title')
-        imdb_year = imdb_obj.get_thing('Year')
-        imdb_release = imdb_obj.get_thing('DVD')
-        if imdb_release != 'N/A':
-            imdb_dvd_date = datetime.datetime.strptime(imdb_obj.get_thing('DVD'), '%d %b %Y')
-            if datetime.datetime.now() < imdb_dvd_date:
-                logging.info("Looks like the DVD hasn't come out yet. Perhaps we should not include this movie")
-        rt_tomatometer = imdb_obj.get_thing('tomatoMeter')
-        if imdb_title is False:
+        imdb_title = imdb_obj.movie_data.Title
+        imdb_release = imdb_obj.movie_data.DVD
+        if imdb_release and datetime.datetime.now() < imdb_release:
+            logging.info("Looks like the DVD hasn't come out yet. Perhaps we should not include this movie") 
+        if not imdb_title:
             logging.warning("Couldn't get IMDB info for IMDB id: %s" %imdb_id)
             continue
-        if imdb_obj.get_thing('Type') != "movie":
-            logging.info("%s is not a movie. Not going to proceed with this title" % imdb_title)
-            continue
-        # Get IMDB Rating
-        imdb_rating = imdb_obj.get_thing('imdbRating')
-        # Search movie ID from CISI
-        logging.info("Going to search CISI for %s" %imdb_title)
-        cisi_movie = search_cisi(imdb_title,imdb_id,imdb_year)
-        if cisi_movie:
-            movie_obj = cisi_movie
-            movie_obj['imdb_rating'] = imdb_rating
+        if imdb_obj.movie_data.CISIid:
+            movie_obj = {}
+            movie_obj['imdb_rating'] = imdb_obj.movie_data.imdbRating
             movie_obj['imdb_id'] = imdb_id
             movie_obj['imdb_title'] = imdb_title
-            movie_obj['tomatoMeter'] = rt_tomatometer
-            cisi_movie_id = cisi_movie['_id']
+            movie_obj['tomatoMeter'] = imdb_obj.movie_data.tomatoMeter
+            movie_obj['rottentomatoes'] = imdb_obj.movie_data.tomatoURL
+            movie_obj['CISIurl'] = imdb_obj.movie_data.CISIurl
             # Search for CISI Streaming/Rental/Buy
             exclude = True
             for media_type in media_types:
-                logging.debug("Going up to look up %s info for CISI movie ID: %s" % (media_type,cisi_movie_id))
-                movie_obj[media_type] = get_movie_info( cisi_movie_id , media_type.lower() )
+                logging.debug("Going up to look up %s info for CISI movie ID: %s" % (media_type,imdb_obj.movie_data.CISIid))
+                movie_obj[media_type] = get_movie_info( imdb_obj.movie_data.CISIid , media_type.lower() , imdb_id)
                 if movie_obj[media_type]:
                     exclude = False
             if exclude:
@@ -308,8 +261,6 @@ def get_movie_data(movies):
             else:
                 movie_obj['exclude'] = False
             movies_ret.append(movie_obj)
-        else:
-            logging.warning("No CISI results for %s with imdb_id %s" % (imdb_title,imdb_id))
     # Return Object
     return movies_ret
 
@@ -341,40 +292,33 @@ def should_comment(post,forced=False,summoned=False):
         return False
 
 """
-Given a post, need to do the following:
-- search Can I Stream it
+Given a post and movies data, need to do the following:
 - format comment
 - reply to the post
 """
-def comment_on_post(post, summoned=False):
+def comment_on_post(post, movies_data, summoned=False):
     name = post.name
     movies_list = post.movies_list
     # Set this post to processing
     post.set_processing(True)
-    if movies_list is not None:
-        logging.info(movies_list)
-        # We should comment on this post
-        movies_data = get_movie_data(movies_list)
-        # If we got valid movie data back
-        if movies_data:
-            comment_text = format_new_post(movies_data)
-            # If the comment text has info
-            if comment_text is not False:
-                submit_comment(post,comment_text)
-            elif summoned is True:
-                logging.info("No links to provide to the user, but summoned. Show them links")
-                comment_text = "Sorry, I couldn't find any links to streaming, rental, or purchase sites. Perhaps the movie is too new"
-                submit_comment(post,comment_text)
-            else:
-                logging.info("No links to provide to the user, and not summoned. Not commenting")
+    # If we got valid movie data back
+    if movies_data:
+        comment_text = format_new_post(movies_data)
+        # If the comment text has info
+        if comment_text is not False:
+            submit_comment(post,comment_text)
         elif summoned is True:
-            logging.info("No movie data was found for post but I was summoned. Need to update with sad comment")
-            comment_text = "Sorry, I was unable to find any movies in this post"
+            logging.info("No links to provide to the user, but summoned. Show them links")
+            comment_text = "Sorry, I couldn't find any links to streaming, rental, or purchase sites. Perhaps the movie is too new"
             submit_comment(post,comment_text)
         else:
-            logging.info("No movie data and not summoned. Not commenting")
+            logging.info("No links to provide to the user, and not summoned. Not commenting")
+    elif summoned is True:
+        logging.info("No movie data was found for post but I was summoned. Need to update with sad comment")
+        comment_text = "Sorry, I was unable to find any movies in this post"
+        submit_comment(post,comment_text)
     else:
-        logging.debug("No movies to comment on. Reply skipping.")
+        logging.info("No movie data and not summoned. Not commenting")
     # Unset processing
     post.set_processing(False)
 
@@ -450,13 +394,13 @@ def format_new_post(movies_data):
         # links, then add to end of the post
         if movie['exclude'] and 'imdb_title' in movie:
             logging.info("We don't have any streams, so tell the user we excluded the title")
-            excluded_movies.append("[%s](%s)" % (movie['imdb_title'],movie['links']['shortUrl']))
+            excluded_movies.append("[%s](%s)" % (movie['imdb_title'],movie['CISIurl']))
             continue
         actual_links = True
-        short_url = movie['links']['shortUrl']
+        short_url = movie['CISIurl']
         title = movie['imdb_title']
         rt_rating = movie['tomatoMeter']
-        rt_link = movie['links']['rottentomatoes']
+        rt_link = movie['rottentomatoes']
         imdb_rating = movie['imdb_rating']
         imdb_link = "http://www.imdb.com/title/%s/" % movie['imdb_id']
         line = ["**[%s](%s)**" % (title.replace(' ','&nbsp;'), short_url)]
@@ -677,10 +621,16 @@ class process_post(webapp2.RequestHandler):
         post = PostObject(post_id,post_data)
         if post.processing is False:
             if post.commented is False or forced is True:
-                if should_comment(post=post,forced=forced,summoned=summoned):
-                    comment_on_post(post,summoned)
+                if post.movies_list is not None:
+                    logging.info(post.movies_list)
+                    # We should comment on this post
+                    movies_data = get_movie_data(post.movies_list)
+                    if should_comment(post=post,forced=forced,summoned=summoned):
+                        comment_on_post(post,movies_data,summoned)
+                    else:
+                        logging.info("Determined I shouldn't comment on this post for one reason or another")
                 else:
-                    logging.info("Determined I shouldn't comment on this post for one reason or another")
+                    logging.debug("No movies to comment on. Reply skipping.")
             else:
                 logging.info("I've already commented on this post. Not commenting this time")
         else:
@@ -825,12 +775,19 @@ class update_wiki_lists(webapp2.RequestHandler):
             else:
                 logging.error("Error updating the %slisted wiki in /r/%s" % (list_type,subreddit))
 
+class delete_all_posts(webapp2.RequestHandler):
+    def get(self):
+        ndb.delete_multi(
+            Post.query().fetch(keys_only=True)
+        )
+        
 application = webapp2.WSGIApplication([
     ('/tasks/search/imdb', search_imdb),
     ('/tasks/search/user', search_usermention),
     ('/tasks/manual/(\w+)', manual_process),
     ('/tasks/review_comment', review_comment),
     ('/tasks/process_post', process_post),
+    ('/tasks/delete_all_posts', delete_all_posts),
     ('/tasks/inbox', read_messages),
     ('/tasks/check_comments',check_comments),
     ('/tasks/wiki', update_wiki_lists)
