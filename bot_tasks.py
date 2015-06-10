@@ -221,6 +221,10 @@ def is_listed(list_type,subreddit):
             return True
     return False
 
+def lookup_movie_data(movies):
+    for imdb_id in movies:
+        IMDB(imdb_id)
+
 """
 Takes a list of IMDB ids and returns array of dictionaries
 with the information about each movie
@@ -252,7 +256,7 @@ def get_movie_data(movies):
             exclude = True
             for media_type in media_types:
                 logging.debug("Going up to look up %s info for CISI movie ID: %s" % (media_type,imdb_obj.movie_data.CISIid))
-                movie_obj[media_type] = get_movie_info( imdb_obj.movie_data.CISIid , media_type.lower() , imdb_id)
+                movie_obj[media_type] = get_movie_info( imdb_obj.movie_data.CISIid , media_type.lower())
                 if movie_obj[media_type]:
                     exclude = False
             if exclude:
@@ -296,29 +300,35 @@ Given a post and movies data, need to do the following:
 - format comment
 - reply to the post
 """
-def comment_on_post(post, movies_data, summoned=False):
+def comment_on_post(post, summoned=False):
     name = post.name
     movies_list = post.movies_list
     # Set this post to processing
     post.set_processing(True)
     # If we got valid movie data back
-    if movies_data:
-        comment_text = format_new_post(movies_data)
-        # If the comment text has info
-        if comment_text is not False:
-            submit_comment(post,comment_text)
+    if movies_list is not None:
+        logging.info(movies_list)
+        # We should comment on this post
+        movies_data = get_movie_data(movies_list)
+        if movies_data:
+            comment_text = format_new_post(movies_data)
+            # If the comment text has info
+            if comment_text is not False:
+                submit_comment(post,comment_text)
+            elif summoned is True:
+                logging.info("No links to provide to the user, but summoned. Show them links")
+                comment_text = "Sorry, I couldn't find any links to streaming, rental, or purchase sites. Perhaps the movie is too new"
+                submit_comment(post,comment_text)
+            else:
+                logging.info("No links to provide to the user, and not summoned. Not commenting")
         elif summoned is True:
-            logging.info("No links to provide to the user, but summoned. Show them links")
-            comment_text = "Sorry, I couldn't find any links to streaming, rental, or purchase sites. Perhaps the movie is too new"
+            logging.info("No movie data was found for post but I was summoned. Need to update with sad comment")
+            comment_text = "Sorry, I was unable to find any movies in this post"
             submit_comment(post,comment_text)
         else:
-            logging.info("No links to provide to the user, and not summoned. Not commenting")
-    elif summoned is True:
-        logging.info("No movie data was found for post but I was summoned. Need to update with sad comment")
-        comment_text = "Sorry, I was unable to find any movies in this post"
-        submit_comment(post,comment_text)
+            logging.info("No movie data and not summoned. Not commenting")
     else:
-        logging.info("No movie data and not summoned. Not commenting")
+        logging.debug("No movies to comment on. Reply skipping.")
     # Unset processing
     post.set_processing(False)
 
@@ -620,17 +630,12 @@ class process_post(webapp2.RequestHandler):
         logging.debug(post_data)
         post = PostObject(post_id,post_data)
         if post.processing is False:
+            lookup_movie_data(post.movies_list)
             if post.commented is False or forced is True:
-                if post.movies_list is not None:
-                    logging.info(post.movies_list)
-                    # We should comment on this post
-                    movies_data = get_movie_data(post.movies_list)
-                    if should_comment(post=post,forced=forced,summoned=summoned):
-                        comment_on_post(post,movies_data,summoned)
-                    else:
-                        logging.info("Determined I shouldn't comment on this post for one reason or another")
+                if should_comment(post=post,forced=forced,summoned=summoned):
+                    comment_on_post(post,summoned)
                 else:
-                    logging.debug("No movies to comment on. Reply skipping.")
+                    logging.info("Determined I shouldn't comment on this post for one reason or another")
             else:
                 logging.info("I've already commented on this post. Not commenting this time")
         else:
