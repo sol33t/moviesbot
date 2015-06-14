@@ -765,7 +765,7 @@ class check_comments(webapp2.RequestHandler):
 
 class update_wiki_lists(webapp2.RequestHandler):
     def get(self):
-        subreddit = cfg['subreddit']
+        subreddit = config.subreddit
         lists = {'white':Whitelisted,'black':Blacklisted}
         for list_type in lists:
             entity = lists[list_type]
