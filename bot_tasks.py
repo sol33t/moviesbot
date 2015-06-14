@@ -728,7 +728,7 @@ class review_comment(webapp2.RequestHandler):
                     logging.info("Need to check if we should recheck the contents of this post")
                     post = ndb.Key(Post, post_id).get()
                     orig_text = comment_revision.body
-                    updated_text = format_new_post(get_movie_data(post.movies))
+                    updated_text = format_new_post(get_movie_data(post.movies_list))
                     if updated_text is not False and len(updated_text) > len(orig_text):
                         logging.info("The updated text is more than what we originally commented on. Perhaps we should edit the comment")
                         # Edit the comment, and update the revision in the DB
