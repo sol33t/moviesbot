@@ -71,6 +71,7 @@ class MovieTypes(messages.Enum):
     movie   = 1
     series  = 2
     episode = 3
+    game    = 4
 
 class Movies(ndb.Model):
     Title = ndb.StringProperty()
