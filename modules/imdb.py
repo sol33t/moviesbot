@@ -120,7 +120,10 @@ class IMDB:
 
     def get_thing_type(self,thing):
         movie_type = self.get_thing(thing)
-        return getattr(MovieTypes, movie_type)
+        if movie_type:
+            return getattr(MovieTypes, movie_type)
+        else:
+            return None
 
     def get_thing_date(self,thing):
         date_string = self.get_thing(thing)
