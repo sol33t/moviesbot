@@ -256,7 +256,9 @@ def get_movie_data(movies):
             exclude = True
             for media_type in media_types:
                 logging.debug("Going up to look up %s info for CISI movie ID: %s" % (media_type,imdb_obj.movie_data.CISIid))
-                movie_obj[media_type] = get_movie_info( imdb_obj.movie_data.CISIid , media_type.lower())
+                cisi_info = get_movie_info( imdb_obj.movie_data.CISIid , media_type.lower())
+                # Send to hand_edits to preform manual tasks on cisi results
+                movie_obj[media_type] = hand_edits(cisi_info,media_type)
                 if movie_obj[media_type]:
                     exclude = False
             if exclude:
@@ -267,6 +269,20 @@ def get_movie_data(movies):
             movies_ret.append(movie_obj)
     # Return Object
     return movies_ret
+
+# Cases where we need to edit CISI results.
+# Change netflix instant results to not go to dvd.netflix.com
+# Properly name Apple iTunes Purchase friendly name
+def hand_edits(cisi_info,media_type):
+    if media_type.lower() == 'streaming':
+        if 'netflix_instant' in cisi_info:
+            logging.info("Found netflix instant in cisi results. Changing url to go directly to the instant page")
+            cisi_info['netflix_instant']['url'] = re.sub(r'dvd\.', '', cisi_info['netflix_instant']['direct_url'])
+    elif media_type.lower() == 'purchase':
+        if 'apple_itunes_purchase' in cisi_info:
+            logging.info("Found apple_itunes_purchase in cisi results. Changing friendly name to Apple iTunes Purchase")
+            cisi_info['apple_itunes_purchase']['friendlyName'] = 'Apple iTunes Purchase'
+    return cisi_info
 
 """
 Given a post, determines if we should comment
