@@ -277,7 +277,7 @@ def hand_edits(cisi_info,media_type):
     if media_type.lower() == 'streaming':
         if 'netflix_instant' in cisi_info:
             logging.info("Found netflix instant in cisi results. Changing url to go directly to the instant page")
-            cisi_info['netflix_instant']['url'] = re.sub(r'dvd\.', '', cisi_info['netflix_instant']['direct_url'])
+            cisi_info['netflix_instant']['url'] = "http://www.netflix.com/title/%s" % cisi_info['netflix_instant']['external_id']
     elif media_type.lower() == 'purchase':
         if 'apple_itunes_purchase' in cisi_info:
             logging.info("Found apple_itunes_purchase in cisi results. Changing friendly name to Apple iTunes Purchase")
@@ -391,16 +391,17 @@ def format_new_post(movies_data):
     # This limits it so that if we don't have
     # Information for all movies for a certain type,
     # then we won't include a blank column
+    # Limit is 3 columns worth of links
     for media_type,friendly_name in default_media_types.iteritems():
         type_in_data = False
         for movie in movies_data:
             if movie[media_type]:
                 type_in_data = True
-        if type_in_data:
+        if type_in_data and len(media_types) < 3:
             media_types.append(media_type)
             friendly_names.append(friendly_name)
     pulral = ''
-    if len(movies_data) > 1:
+    if len(media_types) > 1:
         pulral = 's'
     ret_line = ["Here's where you can %s the movie%s listed:\n\n" % ('/'.join(friendly_names),pulral)]
     heading = ['Title','IMDB','Rotten Tomatoes']
