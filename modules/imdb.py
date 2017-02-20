@@ -8,7 +8,6 @@ import json
 from google.appengine.api import urlfetch
 from google.appengine.ext import ndb
 
-from modules import search_cisi
 from models import Movies, MovieTypes
 
 class IMDB:
@@ -20,12 +19,17 @@ class IMDB:
             imdb_data = self.get_imdb_data()
             if imdb_data is None or imdb_data.updated < date_search:
                 urlfetch.set_default_fetch_deadline(45)
-                self.response = self.api_call("http://omdbapi.com/?i=%s&plot=short&r=json&tomatoes=true" % imdb_id)
-                logging.debug("Response is %s" % self.response)
+                tries = 5
+                while tries > 0:
+                    self.response = self.api_call("http://omdbapi.com/?i=%s&plot=short&r=json&tomatoes=true" % imdb_id)
+                    logging.debug("Response is %s" % self.response)
+                    if self.response is not None:
+                        break
+                    tries -= 1
+                else:
+                    raise Exception("Couldn't get movie data after 5 tries")
                 self.movie_data = self.add_movie_data()
                 logging.debug("Type of this is %s" % self.movie_data.Type)
-                if self.movie_data.Type == MovieTypes.movie:
-                    self.add_cisi_data()
             else:
                 logging.debug("Movie is already in NDB and data is less than 7 days old")
                 self.movie_data = imdb_data
@@ -57,6 +61,7 @@ class IMDB:
             'imdbRating' : 'float',
             'imdbVotes' : 'int',
             'tomatoMeter' : 'int',
+            'tomatoURL' : 'default',
             'tomatoRating' : 'float',
             'tomatoReviews' : 'int',
             'tomatoFresh' : 'int',
@@ -88,24 +93,16 @@ class IMDB:
         movie.put()
         return movie
 
-    def add_cisi_data(self):
-        # Search movie ID from CISI
-        logging.info("Going to search CISI for %s" % self.movie_data.Title)
-        cisi_movie = search_cisi(
-            movie=self.movie_data.Title,
-            imdb_id=self.imdb_id,
-            movie_year=self.movie_data.Year
-        )
-        if cisi_movie:
-            self.movie_data.CISIid = cisi_movie['_id']
-            self.movie_data.CISIurl = cisi_movie['links']['shortUrl']
-            if 'rottentomatoes' in cisi_movie['links']:
-                self.movie_data.tomatoURL = cisi_movie['links']['rottentomatoes']
-            self.movie_data.put()
-        else:
-            logging.warning("No CISI results for %s with imdb_id %s" % (self.movie_data.Title,self.imdb_id))
+    def add_metadata(self,metadata):
+        movie = ndb.Key(Movies, self.imdb_id).get()
+        for key, value in metadata.items():
+            logging.debug("%s:%s" % (key,value))
+            setattr(movie,key,value)
+        movie.put()
+        return movie
 
     def api_call(self,url):
+        logging.debug("Calling OMDB API with the following URL: %s" % url)
         try:
             result = urlfetch.fetch(url)
         except urllib2.URLError, e:

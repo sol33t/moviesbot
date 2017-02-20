@@ -6,6 +6,7 @@ import config
 import re
 import json
 import textwrap
+import traceback
 
 from protorpc import messages
 from protorpc import message_types
@@ -16,7 +17,8 @@ from google.appengine.ext.ndb import msgprop
 
 from modules.reddit import Reddit
 from modules.imdb import IMDB
-from modules import get_movie_info, parse_movie_info, parse_text_for_imdb_ids, parse_text_for_rt_ids, rotten_tomatoes_2_imdb
+from modules.mediahound import MediaHound
+from modules import parse_text_for_imdb_ids, parse_text_for_rt_ids, rotten_tomatoes_2_imdb
 
 from modules.models import Movies, Post, Comment, CommentRevisions, IgnoreList, Whitelisted, Blacklisted
 
@@ -26,6 +28,8 @@ REDDIT_PM_DELETE   = "http://reddit.com/message/compose/?to={username}&subject=d
 REDDIT_PM_FEEDBACK = "https://docs.google.com/forms/d/1PZTwDM71_Wiwxdq6NGKHI1zf-GC2oahqxwn8tX-Hq_E/viewform"
 REDDIT_PM_MODS     = "https://www.reddit.com/r/{subreddit}/wiki/faq#wiki_info_for_moderators".format(subreddit=config.subreddit)
 REDDIT_FAQ         = "https://www.reddit.com/r/{subreddit}/wiki/faq".format(subreddit=config.subreddit)
+REDDIT_MAINTAINER  = "\/u/stevenviola"
+MAINTAINER_LINK    = "http://www.reddit.com/message/compose/?to=stevenviola"
 SOURCE_CODE        = "https://github.com/stevenviola/moviesbot"
 NO_BREAK_SPACE = u'&nbsp;'
 MAX_MESSAGE_LENGTH = 10000
@@ -36,7 +40,11 @@ SIG_LINKS = [
     '[Delete](%s)' % REDDIT_PM_DELETE,
     '[FAQ](%s)' % REDDIT_FAQ,
     '[Source](%s)' % SOURCE_CODE,
-    ('Created{s}and{s}maintained{s}by{s}/u/stevenviola').format(s=NO_BREAK_SPACE),
+    ('Created{s}and{s}maintained{s}by{s}[{maintainer}]({maintainer_link})').format(
+        s=NO_BREAK_SPACE,
+        maintainer=REDDIT_MAINTAINER,
+        maintainer_link=MAINTAINER_LINK
+    ),
     '[](#bot)'
 ]
 
@@ -92,7 +100,7 @@ class PostObject:
             for link_source in self.link_sources:
                 logging.info(link_source)
                 self.movies_list += parse_text_for_imdb_ids(self.link_sources[link_source])
-                self.movies_list += rotten_tomatoes_2_imdb(parse_text_for_rt_ids(self.link_sources[link_source]))
+                #self.movies_list += rotten_tomatoes_2_imdb(parse_text_for_rt_ids(self.link_sources[link_source]))
             # Cast the list to a set, and then back to a list to get unique movie ids
             self.movies_list = list(set(self.movies_list))
             self.movies = []
@@ -221,17 +229,66 @@ def is_listed(list_type,subreddit):
             return True
     return False
 
+def uniform_types(method_type):
+    ret = method_type
+    if method_type == 'broker':
+        ret ='subscription'
+    elif method_type == 'rental':
+        ret ='rent'
+    elif method_type == 'adSupported':
+        ret ='subscription'
+    return ret.title()
+
+def sort_method_types(method_types):
+    ret = []
+    # These are method types we care about
+    ordered_types = ['Subscription', 'Rent', 'Purchase']
+    for i in ordered_types:
+        if i in method_types:
+            ret.append(i.title())
+    # Append any unmatched methods:
+    unmatched = [x.title() for x in method_types if x not in ordered_types]
+    if unmatched:
+        logging.debug(unmatched)
+        ret.extend(list(set(unmatched)))
+    return ret
+
 def lookup_movie_data(movies):
+    mh_imdb_ids = ['IMDB::{0}'.format(i) for i in movies]
+    if mh_imdb_ids:
+        mh = MediaHound()
+        mhids = mh.graph_enter(mh_imdb_ids)
+        logging.debug(mhids)
+    else:
+        mhids = None
     for imdb_id in movies:
-        IMDB(imdb_id)
+        imdb_obj = IMDB(imdb_id)
+        mhid = mhids["IMDB::%s" % imdb_id]
+        logging.debug("MediaHound ID is: %s" % mhid)
+        if mhid is not None:
+            mh_metadata = mh.graph_media(mhid)
+            movie_metadata = {
+                'mhid'     : mhid,
+                'mh_name'  : mh_metadata['metadata']['name'],
+                'mh_altId' : mh_metadata['metadata']['altId']
+            }
+            imdb_obj.add_metadata(movie_metadata)
+        
+
 
 """
 Takes a list of IMDB ids and returns array of dictionaries
 with the information about each movie
 """
 def get_movie_data(movies):
+    if not movies:
+        return False
+    mh = MediaHound()
     media_types = config.mediatypes
-    movies_ret = []
+    movies_ret = {}
+    movies_ret['movies'] = []
+    movies_ret['friendly_names'] = []
+    movies_ret['media_types'] = []
     for imdb_id in movies:
         logging.debug("Looking up information for IMDB id: %s" %imdb_id)
         movie_obj = {}
@@ -244,45 +301,50 @@ def get_movie_data(movies):
         if not imdb_title:
             logging.warning("Couldn't get IMDB info for IMDB id: %s" %imdb_id)
             continue
-        if imdb_obj.movie_data.CISIid:
-            movie_obj = {}
-            movie_obj['imdb_rating'] = imdb_obj.movie_data.imdbRating
-            movie_obj['imdb_id'] = imdb_id
-            movie_obj['imdb_title'] = imdb_title
-            movie_obj['tomatoMeter'] = imdb_obj.movie_data.tomatoMeter
-            movie_obj['rottentomatoes'] = imdb_obj.movie_data.tomatoURL
-            movie_obj['CISIurl'] = imdb_obj.movie_data.CISIurl
-            # Search for CISI Streaming/Rental/Buy
-            exclude = True
-            for media_type in media_types:
-                logging.debug("Going up to look up %s info for CISI movie ID: %s" % (media_type,imdb_obj.movie_data.CISIid))
-                cisi_info = get_movie_info( imdb_obj.movie_data.CISIid , media_type.lower())
-                # Send to hand_edits to preform manual tasks on cisi results
-                movie_obj[media_type] = hand_edits(cisi_info,media_type)
-                if movie_obj[media_type]:
-                    exclude = False
-            if exclude:
-                logging.warning("No results for all media types. Not including this movie in the list")
-                movie_obj['exclude'] = True
-            else:
-                movie_obj['exclude'] = False
-            movies_ret.append(movie_obj)
+        
+        movie_obj = {}
+        movie_obj['imdb_rating'] = imdb_obj.movie_data.imdbRating
+        movie_obj['imdb_id'] = imdb_id
+        movie_obj['imdb_title'] = imdb_title
+        movie_obj['tomatoMeter'] = imdb_obj.movie_data.tomatoMeter
+        movie_obj['rottentomatoes'] = imdb_obj.movie_data.tomatoURL
+        movie_obj['media_types'] = {}
+        movie_obj['exclude'] = True
+        if imdb_obj.movie_data.mhid:
+            movie_obj['mhid'] = imdb_obj.movie_data.mhid
+            movie_obj['mh_title'] = imdb_obj.movie_data.mh_name
+            movie_obj['mh_altId'] = imdb_obj.movie_data.mh_altId
+            mh_sources = mh.graph_media(imdb_obj.movie_data.mhid,'sources')
+            movie_obj['exclude'] = not mh_sources['content']
+            for mh_object in mh_sources['content']:
+                if 'allMediums' in mh_object['object'] and mh_object['object']['allMediums']:
+                    movies_ret['friendly_names'].extend(mh_object['object']['allMediums'])
+                    media_provider = mh_object['object']['metadata']['name']
+                    logging.debug("Found media from: %s" % media_provider)
+                    for medium in mh_object['context']['mediums']:
+                        for method in medium['methods']:
+                            method_type = uniform_types(method['type'])
+                            logging.debug("Type is %s" % method['type'])
+                            movies_ret['media_types'].append(method_type)
+                            if method_type not in movie_obj['media_types']:
+                                movie_obj['media_types'][method_type] = {}
+                            for format in method['formats']:
+                                url = format['launchInfo']['view']['http']
+                                if 'price' in format:
+                                    price = format['price']
+                                else:
+                                    prive = 0
+                                if media_provider not in movie_obj['media_types'][method_type] or price < movie_obj['media_types'][method_type][media_provider]['price']:
+                                    movie_obj['media_types'][method_type][media_provider] = {
+                                        'url'  : url,
+                                        'price': price
+                                    }
+        movies_ret['movies'].append(movie_obj)
+    movies_ret['friendly_names'] = list(set(movies_ret['friendly_names']))
+    movies_ret['media_types'] = sort_method_types(movies_ret['media_types'])
+    logging.debug(movies_ret)
     # Return Object
     return movies_ret
-
-# Cases where we need to edit CISI results.
-# Change netflix instant results to not go to dvd.netflix.com
-# Properly name Apple iTunes Purchase friendly name
-def hand_edits(cisi_info,media_type):
-    if media_type.lower() == 'streaming':
-        if 'netflix_instant' in cisi_info:
-            logging.info("Found netflix instant in cisi results. Changing url to go directly to the instant page")
-            cisi_info['netflix_instant']['url'] = "http://www.netflix.com/title/%s" % cisi_info['netflix_instant']['external_id']
-    elif media_type.lower() == 'purchase':
-        if 'apple_itunes_purchase' in cisi_info:
-            logging.info("Found apple_itunes_purchase in cisi results. Changing friendly name to Apple iTunes Purchase")
-            cisi_info['apple_itunes_purchase']['friendlyName'] = 'Apple iTunes Purchase'
-    return cisi_info
 
 """
 Given a post, determines if we should comment
@@ -320,33 +382,38 @@ def comment_on_post(post, summoned=False):
     name = post.name
     movies_list = post.movies_list
     # Set this post to processing
+    logging.debug("Setting processing to True")
     post.set_processing(True)
-    # If we got valid movie data back
-    if movies_list is not None:
-        logging.info(movies_list)
-        # We should comment on this post
-        movies_data = get_movie_data(movies_list)
-        if movies_data:
-            comment_text = format_new_post(movies_data)
-            # If the comment text has info
-            if comment_text is not False:
-                submit_comment(post,comment_text)
+    try:
+        # If we got valid movie data back
+        if movies_list is not None:
+            logging.info(movies_list)
+            # We should comment on this post
+            movies_data = get_movie_data(movies_list)
+            if movies_data:
+                comment_text = format_new_post(movies_data)
+                # If the comment text has info
+                if comment_text is not False:
+                    submit_comment(post,comment_text)
+                elif summoned is True:
+                    logging.info("No links to provide to the user, but summoned. Show them links")
+                    comment_text = "Sorry, I couldn't find any links to streaming, rental, or purchase sites. Perhaps the movie is too new"
+                    submit_comment(post,comment_text)
+                else:
+                    logging.info("No links to provide to the user, and not summoned. Not commenting")
             elif summoned is True:
-                logging.info("No links to provide to the user, but summoned. Show them links")
-                comment_text = "Sorry, I couldn't find any links to streaming, rental, or purchase sites. Perhaps the movie is too new"
+                logging.info("No movie data was found for post but I was summoned. Need to update with sad comment")
+                comment_text = "Sorry, I was unable to find any movies in this post\n"
                 submit_comment(post,comment_text)
             else:
-                logging.info("No links to provide to the user, and not summoned. Not commenting")
-        elif summoned is True:
-            logging.info("No movie data was found for post but I was summoned. Need to update with sad comment")
-            comment_text = "Sorry, I was unable to find any movies in this post"
-            submit_comment(post,comment_text)
+                logging.info("No movie data and not summoned. Not commenting")
         else:
-            logging.info("No movie data and not summoned. Not commenting")
-    else:
-        logging.debug("No movies to comment on. Reply skipping.")
+            logging.debug("No movies to comment on. Reply skipping.")
+    except Exception, e:
+        logging.critical("Encountered error when processing post. Abort: %s" % traceback.print_exc());
     # Unset processing
     post.set_processing(False)
+    logging.debug("Processing set to False")
 
 def pm_summon(message):
     missing_link_error = "I can't find a valid reddit link in the message body"
@@ -397,6 +464,8 @@ Adds the reply to the DB and edits the comment for the delete button
 """
 def submit_comment(post,comment_text):
     name = post.name
+    footer = '\n---\n' + ' ^| '.join(['^' + a for a in SIG_LINKS])
+    comment_text += footer
     new_post_result =  reddit.post_to_reddit(name,comment_text,'comment')
     # If the comment was posted sucessfully
     if new_post_result:
@@ -427,26 +496,18 @@ def update_comment(post_id,comment_id,body):
     comment.put()
 
 def format_new_post(movies_data):
-    default_media_types = config.mediatypes
-    media_types=[]
-    friendly_names=[]
-    # Check for which types have information
-    # This limits it so that if we don't have
-    # Information for all movies for a certain type,
-    # then we won't include a blank column
-    # Limit is 3 columns worth of links
-    for media_type,friendly_name in default_media_types.iteritems():
-        type_in_data = False
-        for movie in movies_data:
-            if movie[media_type]:
-                type_in_data = True
-        if type_in_data and len(media_types) < 3:
-            media_types.append(media_type)
-            friendly_names.append(friendly_name)
+    media_types = movies_data['media_types']
+    friendly_names = movies_data['friendly_names']
     pulral = ''
-    if len(media_types) > 1:
+    if len(movies_data['movies']) > 1:
         pulral = 's'
-    ret_line = ["Here's where you can %s the movie%s listed:\n\n" % ('/'.join(friendly_names),pulral)]
+    if len(friendly_names) == 0:
+        ret_line = ["No info for the movies listed:\n\n"]
+    else:
+        ret_line = [
+            "Here's where you can %s the movie%s listed:\n\n" %
+                ('/'.join(friendly_names),pulral)
+        ]
     heading = ['Title','IMDB','Rotten Tomatoes']
     heading += media_types
     seperator = []
@@ -458,35 +519,51 @@ def format_new_post(movies_data):
         seperator.append(sep)
     ret_line.append(" | ".join(heading))
     ret_line.append("|".join(seperator))
-    excluded_movies = []
-    for movie in movies_data:
-        # If we have details about the movie, but no 
-        # links, then add to end of the post
-        if movie['exclude'] and 'imdb_title' in movie:
-            logging.info("We don't have any streams, so tell the user we excluded the title")
-            excluded_movies.append("[%s](%s)" % (movie['imdb_title'],movie['CISIurl']))
-            continue
+    for movie in movies_data['movies']:
         actual_links = True
-        short_url = movie['CISIurl']
-        title = movie['imdb_title']
         rt_rating = movie['tomatoMeter']
+        if rt_rating is None:
+            rt_rating = 'N/A'
+        else:
+            rt_rating = "{0}%".format(rt_rating)
         rt_link = movie['rottentomatoes']
         imdb_rating = movie['imdb_rating']
+        if imdb_rating is None:
+            imdb_rating = 'N/A'
         imdb_link = "http://www.imdb.com/title/%s/" % movie['imdb_id']
-        line = ["**[%s](%s)**" % (title.replace(' ','&nbsp;'), short_url)]
+        if 'mhid' in movie:
+            short_url = "https://nextqueue.com/movie/%s" % movie['mh_altId'][6:]
+            title = movie['mh_title']
+        else:
+            short_url = imdb_link
+            title = movie['imdb_title']
+        line = ["**[%s](%s)**" % (title, short_url)]
         line.append("[%s](%s)" % (imdb_rating,imdb_link))
-        line.append("[{0}%]({1})".format(rt_rating,rt_link))
+        if rt_link is not None:
+            line.append("[{0}]({1})".format(rt_rating,rt_link))
+        else:
+            line.append(rt_rating)
+        logging.debug(line)
+        # If we have details about the movie, but no 
+        # links, then just add a message
+        if movie['exclude'] and 'imdb_title' in movie:
+            logging.info("We don't have any info, so tell the user we excluded the title")
+#            line.append("No %s options for: %s" % ( ' , '.join(media_types), title ))
         for media_type in media_types:
-            type_strings = parse_movie_info(movie[media_type])
-            type_joined = ' '.join(type_strings)
+            if media_type in movie['media_types']:
+                type_strings = []
+                for provider,details in movie['media_types'][media_type].items():
+                    name = provider
+                    if details['price'] > 0:
+                        name = "%s - $%s" % (provider, details['price'])
+                    type_strings.append(
+                        ("[%s](%s)" % ( name, details['url'] )).replace(' ','&nbsp;')
+                    )
+                type_joined = ' '.join(type_strings)
+            else:
+                type_joined = ''
             line.append(type_joined)
         ret_line.append('|'.join(line))
-    if excluded_movies:
-        ret_line.append("\nNo %s info for: %s" % (
-            ' , '.join(default_media_types.keys()),
-            ' , '.join(excluded_movies)
-        ))
-    ret_line.append('\n---\n' + ' ^| '.join(['^' + a for a in SIG_LINKS]))
     # If we don't have streams for any movies, we shouldn't comment
     # Only return the formatted text if we have useful info
     if actual_links:

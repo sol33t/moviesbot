@@ -29,8 +29,9 @@ class Reddit:
             "password": config.reddit['password']
         }
         request_payload_encoded = urllib.urlencode(request_payload)
-        headers={"Authorization": 
-            "Basic %s" % base64creds
+        headers={
+            "Authorization": "Basic %s" % base64creds,
+            "User-Agent": "moviesbot version 0.0.1 by /u/moviesbot"
         }
         result = urlfetch.fetch("https://ssl.reddit.com/api/v1/access_token",
             payload=request_payload_encoded,
@@ -39,7 +40,7 @@ class Reddit:
         )
         if result.status_code == 200:
             auth_token = json.loads(result.content)
-            logging.info(auth_token)
+            logging.debug(auth_token)
             if 'error' in auth_token:
                 self.auth_token = False
                 logging.error("Got the following error: %s" % auth_token['error'])
