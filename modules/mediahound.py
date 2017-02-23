@@ -49,7 +49,7 @@ class MediaHound:
         logging.debug(raw_ids)
         ids = '&'.join(['ids={0}'.format(i) for i in raw_ids])
         base_url = "https://api.mediahound.com/1.2/graph/enter/raw?%s" % ids
-        logging.debug("Going to request graph media from the following address: %s" % base_url)
+        logging.info("Going to request graph media from the following address: %s" % base_url)
         result = urlfetch.fetch(
             url="%s&access_token=%s" % (base_url, self.auth_token)
         )
@@ -66,7 +66,7 @@ class MediaHound:
         if media_type == 'sources':
             base_url += "/sources"
         params_string = '&'.join(params)
-        logging.debug("Going to request graph media from the following address: %s" % base_url)
+        logging.info("Going to request graph media from the following address: %s" % base_url)
         result = urlfetch.fetch(
             url="%s?%s" % (base_url,params_string)
         )

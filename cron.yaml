@@ -1,7 +1,7 @@
 cron:
 - description: Search for posts with imdb.com in the selftext or title or url
   url: /tasks/search/imdb
-  schedule: every 5 mins
+  schedule: every 1 mins
 - description: Search for posts with the configured username in the title, url or selftext
   url: /tasks/search/user
   schedule: every 10 mins

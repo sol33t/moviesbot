@@ -88,7 +88,7 @@ class IMDB:
                 thing_value = self.get_thing_type(thing)
             else:
                 thing_value = None
-            logging.info("Setting self.%s to be %s" % (thing,thing_value))
+            logging.debug("Setting self.%s to be %s" % (thing,thing_value))
             setattr(movie,thing,thing_value)
         movie.put()
         return movie
@@ -102,7 +102,7 @@ class IMDB:
         return movie
 
     def api_call(self,url):
-        logging.debug("Calling OMDB API with the following URL: %s" % url)
+        logging.info("Calling OMDB API with the following URL: %s" % url)
         try:
             result = urlfetch.fetch(url)
         except urllib2.URLError, e:

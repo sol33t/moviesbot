@@ -98,7 +98,7 @@ class PostObject:
                 self.link_sources['body'] = post['data']['body']
             logging.info("Need to search the link_sources for IMDB links")
             for link_source in self.link_sources:
-                logging.info(link_source)
+                logging.debug(link_source)
                 self.movies_list += parse_text_for_imdb_ids(self.link_sources[link_source])
                 #self.movies_list += rotten_tomatoes_2_imdb(parse_text_for_rt_ids(self.link_sources[link_source]))
             # Cast the list to a set, and then back to a list to get unique movie ids
@@ -265,7 +265,7 @@ def lookup_movie_data(movies):
         imdb_obj = IMDB(imdb_id)
         mhid = mhids["IMDB::%s" % imdb_id]
         logging.debug("MediaHound ID is: %s" % mhid)
-        if mhid is not None:
+        if mhid is not None and imdb_obj.movie_data.mhid is None:
             mh_metadata = mh.graph_media(mhid)
             movie_metadata = {
                 'mhid'     : mhid,
