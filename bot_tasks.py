@@ -592,27 +592,40 @@ def delete_message(message):
 
 reddit = Reddit()
 
-def search_process_reddit_posts(query,summoned=False):
-    logging.debug("Searching Reddit with the following query: %s. Summoned is %s" % (query,summoned))
-    search_results = reddit.search_reddit(query)
+def search_process_reddit_posts(query,summoned=False,recursive=True,after=None):
+    if after is not None:
+        new_query = "%s&after=%s" % (query,after)
+    else:
+        new_query = query
+    logging.debug("Searching Reddit with the following query: %s. Summoned is %s" % (new_query,summoned))
+    search_results = reddit.search_reddit(new_query)
     if search_results:
         for post in search_results['data']['children']:
             logging.debug(post)
+            post_id = post['data']['name']
+            if ndb.Key(Post, post_id).get():
+                recursive = False
             taskqueue.add(
                 url='/tasks/process_post',
                 queue_name='processPost',
                 params={
-                    'post': post['data']['name'],
+                    'post': post_id,
                     'summoned':summoned,
                     'post_data':json.dumps(post),
                 }
+            )
+        if recursive:
+            search_process_reddit_posts(
+                query,
+                summoned,
+                after=search_results['data']['after']
             )
 
 # Performs a search for posts with imdb links in the title,
 # selftext, and url. For each post, send to comment on post
 class search_imdb(webapp2.RequestHandler):
     def get(self):
-        search_process_reddit_posts("title%3Aimdb.com+OR+url%3Aimdb.com+OR+imdb.com&t=hour")
+        search_process_reddit_posts("title%3Aimdb.com+OR+url%3Aimdb.com+OR+imdb.com&t=hour&sort=new")
 
 class search_usermention(webapp2.RequestHandler):
     def get(self):
