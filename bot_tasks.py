@@ -20,7 +20,7 @@ from modules.imdb import IMDB
 from modules.mediahound import MediaHound
 from modules import parse_text_for_imdb_ids, parse_text_for_rt_ids, rotten_tomatoes_2_imdb
 
-from modules.models import Movies, Post, Comment, CommentRevisions, IgnoreList, Whitelisted, Blacklisted
+from modules.models import Movies, MovieTypes, Post, Comment, CommentRevisions, IgnoreList, Whitelisted, Blacklisted
 
 REDDIT_PM_IGNORE   = "http://www.reddit.com/message/compose/?to={username}&subject=IGNORE%20ME&message=[IGNORE%20ME](http://i.imgur.com/s2jMqQN.jpg\)".format(username=config.reddit['user'])
 REDDIT_PM_REMEMBER = "http://www.reddit.com/message/compose/?to={username}&subject=REMEMBER%20ME&message=I%20made%20a%20mistake%20I%27m%20sorry,%20will%20you%20take%20me%20back".format(username=config.reddit['user'])
@@ -294,6 +294,11 @@ def get_movie_data(movies):
         movie_obj = {}
         # Lookup IMDB name
         imdb_obj = IMDB(imdb_id)
+        if imdb_obj.movie_data.Type != MovieTypes.movie:
+            logging.info("Skipping non movie link: %s. Type is: %s" %
+                (imdb_id, imdb_obj.movie_data.Type)
+            )
+            continue
         imdb_title = imdb_obj.movie_data.Title
         imdb_release = imdb_obj.movie_data.DVD
         if imdb_release and datetime.datetime.now() < imdb_release:
@@ -301,7 +306,6 @@ def get_movie_data(movies):
         if not imdb_title:
             logging.warning("Couldn't get IMDB info for IMDB id: %s" %imdb_id)
             continue
-        
         movie_obj = {}
         movie_obj['imdb_rating'] = imdb_obj.movie_data.imdbRating
         movie_obj['imdb_id'] = imdb_id
@@ -390,14 +394,14 @@ def comment_on_post(post, summoned=False):
             logging.info(movies_list)
             # We should comment on this post
             movies_data = get_movie_data(movies_list)
-            if movies_data:
+            if len(movies_data['movies']) > 0:
                 comment_text = format_new_post(movies_data)
                 # If the comment text has info
-                if comment_text is not False:
+                if comment_text is not False and ( len(movies_data['media_types']) > 0 or summoned is True ):
                     submit_comment(post,comment_text)
                 elif summoned is True:
-                    logging.info("No links to provide to the user, but summoned. Show them links")
-                    comment_text = "Sorry, I couldn't find any links to streaming, rental, or purchase sites. Perhaps the movie is too new"
+                    logging.critical("This condition shouldn't happen. Investigate why this was called")
+                    comment_text = "Sorry, I couldn't find any links to streaming, rental, or purchase sites. Perhaps the movie is too new\n"
                     submit_comment(post,comment_text)
                 else:
                     logging.info("No links to provide to the user, and not summoned. Not commenting")
@@ -502,7 +506,7 @@ def format_new_post(movies_data):
     if len(movies_data['movies']) > 1:
         pulral = 's'
     if len(friendly_names) == 0:
-        ret_line = ["No info for the movies listed:\n\n"]
+        ret_line = ["Sorry, no streaming, rental, or purchase links found for the following movies:\n\n"]
     else:
         ret_line = [
             "Here's where you can %s the movie%s listed:\n\n" %
@@ -520,6 +524,12 @@ def format_new_post(movies_data):
     ret_line.append(" | ".join(heading))
     ret_line.append("|".join(seperator))
     for movie in movies_data['movies']:
+        # If we have details about the movie, but no 
+        # links, then just add a message
+        if movie['exclude'] and 'imdb_title' not in movie:
+            logging.info("We don't have any info, so tell the user we excluded the title")
+#            line.append("No %s options for: %s" % ( ' , '.join(media_types), title ))
+            continue
         actual_links = True
         rt_rating = movie['tomatoMeter']
         if rt_rating is None:
@@ -544,11 +554,6 @@ def format_new_post(movies_data):
         else:
             line.append(rt_rating)
         logging.debug(line)
-        # If we have details about the movie, but no 
-        # links, then just add a message
-        if movie['exclude'] and 'imdb_title' in movie:
-            logging.info("We don't have any info, so tell the user we excluded the title")
-#            line.append("No %s options for: %s" % ( ' , '.join(media_types), title ))
         for media_type in media_types:
             if media_type in movie['media_types']:
                 type_strings = []
@@ -559,7 +564,7 @@ def format_new_post(movies_data):
                     type_strings.append(
                         ("[%s](%s)" % ( name, details['url'] )).replace(' ','&nbsp;')
                     )
-                type_joined = ' '.join(type_strings)
+                type_joined = ' &#183; '.join(type_strings)
             else:
                 type_joined = ''
             line.append(type_joined)
@@ -878,8 +883,11 @@ class review_comment(webapp2.RequestHandler):
                         logging.error("Couldn't find revision %d for comment %s" % (comment_revision_num,comment_id))
                         return None
                     logging.info("Need to check if we should recheck the contents of this post")
-                    post = ndb.Key(Post, post_id).get()
+                    post = PostObject(post_id)
                     orig_text = comment_revision.body
+                    if not post.movies_list:
+                        logging.info("No movies in parent post")
+                        return None
                     updated_text = format_new_post(get_movie_data(post.movies_list))
                     if updated_text is not False and len(updated_text) > len(orig_text):
                         logging.info("The updated text is more than what we originally commented on. Perhaps we should edit the comment")

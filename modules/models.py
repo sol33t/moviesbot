@@ -48,25 +48,6 @@ class Blacklisted(ndb.Model):
     updated = ndb.DateTimeProperty(auto_now_add=True)
     updated_by = ndb.StringProperty()
 
-class CISITypes(messages.Enum):
-    streaming = 1
-    rental    = 2
-    purchase  = 3
-    dvd       = 4
-    xfinity   = 5
-
-class CISI(ndb.Model):
-    cisi_type = msgprop.EnumProperty(CISITypes)
-    cisi_id = ndb.StringProperty()
-    url = ndb.StringProperty()
-    price = ndb.FloatProperty()
-    external_id = ndb.StringProperty()
-    date_checked = ndb.DateTimeProperty()
-    direct_url = ndb.StringProperty()
-    friendlyName = ndb.StringProperty()
-    added = ndb.DateTimeProperty(auto_now_add=True)
-    updated = ndb.DateTimeProperty(auto_now=True)
-
 class MovieTypes(messages.Enum):
     movie   = 1
     series  = 2

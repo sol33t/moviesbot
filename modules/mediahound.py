@@ -34,7 +34,7 @@ class MediaHound:
                 logging.error("Got the following error: %s" % auth_token['error'])
                 return False
             else:
-                logging.info("Setting mediahound auth token")
+                logging.debug("Setting mediahound auth token")
                 self.auth_token = auth_token["access_token"]
                 self.auth_expires = int(time.time())+auth_token['expires_in']
                 logging.debug("Auth token is %s and expires at %s" % (self.auth_token,self.auth_expires))
