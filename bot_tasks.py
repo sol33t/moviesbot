@@ -719,7 +719,7 @@ class read_messages(webapp2.RequestHandler):
                         # Reply to the user
                         reply_subject = "re: %s" %subject
                         logging.info("Replying with subject: %s and response %s" % (reply_subject,response))
-                        reddit.send_message(author,reply_subject,response)
+                        reddit.post_to_reddit(name,response)
         else:
             logging.error("Error getting unread messages")
 
