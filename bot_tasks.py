@@ -348,6 +348,49 @@ def comment_on_post(post, summoned=False):
     # Unset processing
     post.set_processing(False)
 
+def pm_summon(message):
+    missing_link_error = "I can't find a valid reddit link in the message body"
+    author  = message['author']
+    body    = message['body']
+    date    = datetime.datetime.fromtimestamp(int(message['created_utc']))
+    subject = message['subject'].lower()
+    message_id = int(message['id'],36)
+    # Parse out a link to a post
+    match = re.search(
+        r'r\/[\w]+\/comments\/(?P<post_id>[a-z0-9]+)(\/[\w]+\/)?(?P<comment_id>[a-z0-9]+)?',
+        body
+    )
+    if not match:
+        return missing_link_error
+    post_id = match.group('post_id')
+    comment_id = match.group('comment_id')
+    if comment_id is not None:
+        post = PostObject('t1_%s' % comment_id)
+    elif post_id is not None:
+        post = PostObject('t3_%s' % post_id)
+    else:
+        return missing_link_error
+    logging.info("Subreddit is %s" % post.subreddit)
+    # Check to see if user is moderator of subreddit
+    # If not, abort now
+    if not reddit.is_user_moderator(post.subreddit,author):
+        return "Sorry, this feature is only available to moderators of %s" % post.subreddit
+    if not should_comment(post):
+        return "I don't think I should comment on this post. Either because the user has requested I not respond to them, or because the subreddit is on the blacklist"
+    movies_list = parse_text_for_imdb_ids(body)
+    if movies_list is None:
+        return "Couldn't find any IMDB links in your message"
+    if post.processing:
+        return "This post is currently processing. Try back in a few minutes"
+    lookup_movie_data(movies_list)
+    movies_data = get_movie_data(movies_list)
+    logging.debug(movies_data)
+    if movies_data is False or len(movies_data['movies']) == 0:
+        return "Couldn't find any movies in your message"
+    comment_text = format_new_post(movies_data)
+    submit_comment(post,comment_text)
+    return "Hooray! that comment has been posted for you"
+
 """
 Replies to a post with the comment text provided
 Adds the reply to the DB and edits the comment for the delete button
@@ -711,6 +754,8 @@ class read_messages(webapp2.RequestHandler):
                         response = add_to_list(message['data'])
                     elif subject == "delete":
                         response = delete_message(message['data'])
+                    elif subject == "process" or subject == "re: process":
+                        response = pm_summon(message['data'])
                     else:
                         logging.info("Got a random message. I don't know how to handle this. I need a human.")
                 # Mark message as read
