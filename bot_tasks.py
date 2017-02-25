@@ -337,7 +337,7 @@ def get_movie_data(movies):
                                 if 'price' in format:
                                     price = format['price']
                                 else:
-                                    prive = 0
+                                    price = 0
                                 if media_provider not in movie_obj['media_types'][method_type] or price < movie_obj['media_types'][method_type][media_provider]['price']:
                                     movie_obj['media_types'][method_type][media_provider] = {
                                         'url'  : url,
