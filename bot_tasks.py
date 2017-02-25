@@ -678,41 +678,46 @@ def delete_message(message):
     response = None
     author = message['author']
     body = message['body']
-    body_regex = re.search(r'delete ((t\d)_(\w+))',body)
-    thing_name = str(body_regex.group(1))
-    thing_type = body_regex.group(2)
+    body_regex = re.search(r'delete (?P<thing_name>(?P<thing_type>t\d)_(?P<thing_id>\w+))',body)
+    if not body_regex:
+        logging.info("Couldn't find a anything to delete in the message")
+        return None
+    thing_name = str(body_regex.group('thing_name'))
+    thing_type = body_regex.group('thing_type')
+    logging.debug("thing_name: %s; thing_type: %s" % (thing_name,thing_type))
     # Figure out what the thing they want us to delete is
-    if thing_type == "t1":
-        # This thing is a comment
-        # Lookup this thing in the DB
-        logging.debug("Searching for a post with a comment of %s" % thing_name)
-        comments = Comment.query(
-            Comment.name == thing_name,
-        ).fetch()
-        for comment in comments:
-            logging.debug(comment)
-            post = comment.key.parent().get()
-            original_author = post.author
-            # If the author is the same as the author in question
-            if original_author == author:
-                logging.info("Message from %s matches OP %s. Will delete %s" %(author,original_author,thing_name))
-                # Delete post
-                reddit.delete_from_reddit(thing_name)
-                comment.deleted = True
-                comment.put()
-                response =  textwrap.dedent("""
-                    Ok, I deleted my comment on your post. Sorry about that. 
-                    If you never want me to respond to you again, I understand. you can always send 
-                    [a message](%s), and I'll never ever respond to your post, 
-                    I promise. Also, if you wouldn't mind filling out 
-                    [this survey](%s) giving me feedback, I'd really appreciate 
-                    it. It would make me a better bot.
-                    """ % (REDDIT_PM_IGNORE,REDDIT_PM_FEEDBACK))
-            else:
-                # Delete request isn't from OP. Don't delete
-                logging.info("%s isn't the OP. Will not delete %s" % (author,thing_name))
-    else:
+    if thing_type != "t1":
         logging.info("Received Delete request for unknown thing type %s" % thing_type)
+        return None
+    # This thing is a comment
+    # Lookup this thing in the DB
+    logging.debug("Searching for a post with a comment of %s" % thing_name)
+    comments = Comment.query(
+        Comment.name == thing_name,
+    ).fetch()
+    logging.debug(comments)
+    for comment in comments:
+        logging.debug(comment)
+        post = comment.key.parent().get()
+        original_author = post.author
+        # If the author is the same as the author in question
+        if original_author == author:
+            logging.info("Message from %s matches OP %s. Will delete %s" %(author,original_author,thing_name))
+            # Delete post
+            reddit.delete_from_reddit(thing_name)
+            comment.deleted = True
+            comment.put()
+            response =  textwrap.dedent("""
+                Ok, I deleted my comment on your post. Sorry about that.
+                If you never want me to respond to you again, I understand. you can always send
+                [a message](%s), and I'll never ever respond to your post,
+                I promise. Also, if you wouldn't mind filling out
+                [this survey](%s) giving me feedback, I'd really appreciate
+                it. It would make me a better bot.
+                """ % (REDDIT_PM_IGNORE,REDDIT_PM_FEEDBACK))
+        else:
+            # Delete request isn't from OP. Don't delete
+            logging.info("%s isn't the OP. Will not delete %s" % (author,thing_name))
     return response
 
 reddit = Reddit()
