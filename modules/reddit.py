@@ -112,7 +112,7 @@ class Reddit:
         logging.debug("Text is %s" % text)
         url = "https://oauth.reddit.com/api/%s/.json" % post_type
         payload = { 'thing_id':thing_id,
-                    'text':text,
+                    'text':text.encode('utf-8'),
                     'api_type':'json'
         }
         return self.api_call(url,urllib.urlencode(payload))
