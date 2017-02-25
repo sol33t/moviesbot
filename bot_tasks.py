@@ -744,18 +744,19 @@ def search_process_reddit_posts(query,summoned=False,recursive=True,after=None):
                     'post_data':json.dumps(post),
                 }
             )
-        if recursive:
+        next_after = search_results['data']['after']
+        if recursive and next_after is not None:
             search_process_reddit_posts(
                 query,
                 summoned,
-                after=search_results['data']['after']
+                after=next_after
             )
 
 # Performs a search for posts with imdb links in the title,
 # selftext, and url. For each post, send to comment on post
 class search_imdb(webapp2.RequestHandler):
     def get(self):
-        search_process_reddit_posts("title%3Aimdb.com+OR+url%3Aimdb.com+OR+imdb.com&t=hour&sort=new")
+        search_process_reddit_posts("title%3Aimdb.com+OR+url%3Aimdb.com+OR+imdb.com")
 
 class search_usermention(webapp2.RequestHandler):
     def get(self):
