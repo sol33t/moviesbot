@@ -903,7 +903,7 @@ class review_comment(webapp2.RequestHandler):
                         logging.info("No need to edit the comment since updated text is not longer than what we have")
                 comment.put()
             else:
-                logging.warning("No children returned when searching for comment: %s" % comment_id)
+                logging.info("No children returned when searching for comment: %s" % comment_id)
         else:
             logging.error("Unable to get results for comment %s" % comment_id)
             # Throw error to get out of here
