@@ -5,6 +5,8 @@ import time
 import logging
 import config
 from google.appengine.api import urlfetch
+from google.appengine.api.urlfetch_errors import *
+from google.appengine import runtime
 
 class Reddit:
 
@@ -68,7 +70,7 @@ class Reddit:
         return headers
 
 
-    def api_call(self,url,payload=None):
+    def api_call(self,url,payload=None,recursive=True):
         if not self.auth_token:
             logging.warning("Woah, not authenticated. Will try to get auth_token")
             if not self.get_token():
@@ -79,14 +81,37 @@ class Reddit:
             method=urlfetch.POST
         else:
             method=urlfetch.GET
-        result = urlfetch.fetch(url, method=method, payload=payload, headers=headers)
+        logging.info("Making Reddit API call to the following URL: %s" % url)
+        try:
+            result = urlfetch.fetch(url, method=method, payload=payload, headers=headers)
+        except (runtime.DeadlineExceededError, urlfetch.ConnectionClosedError) as e:
+            if recursive:
+                logging.info("Got error: %s. Retrying request in 2 seconds" % e)
+                time.sleep(2)
+                return self.api_call(url,payload,recursive=False)
+            else:
+                logging.warning("Connection closed during retry. Aborting this API call")
+                return False
         if result.status_code == 200:
             logging.debug(result.content)
             return json.loads(result.content)
         elif result.status_code == 401:
-            logging.warning("Looks like the token expired")
+            logging.info("Looks like the token expired. Getting new token")
             # Get a new token here
-            self.get_token()
+            # Call the api call function again
+            if self.get_token() and recursive:
+                 return self.api_call(url,payload,recursive=False)
+            else:
+                logging.error("Unauthorized error after renewing auth token")
+                return False
+        elif result.status_code == 429:
+            logging.info("HTTP 429 error. Retrying request in 2 seconds")
+            time.sleep(2)
+            if recursive:
+                return self.api_call(url,payload,recursive=False)
+            else:
+                logging.warning("Still getting 429 error after sleeping")
+                return False
         else:
             logging.error("The api call returned with status code %d for the following URL:%s" % (result.status_code,url))
         return False
@@ -104,7 +129,7 @@ class Reddit:
 
     def search_reddit(self,query,sort='new',time='hour'):
         url = "https://oauth.reddit.com/search.json?q=%s&sort=%s&t=%s" % (query,sort,time)
-        logging.info("Performing search on Reddit to the following URL: %s" % url)
+        logging.info("Performing search on Reddit for: %s" % query)
         return self.api_call (url)
 
     def post_to_reddit(self,thing_id,text,post_type='comment'):
