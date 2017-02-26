@@ -254,18 +254,17 @@ def sort_method_types(method_types):
     return ret
 
 def lookup_movie_data(movies):
-    mh_imdb_ids = ['IMDB::{0}'.format(i) for i in movies]
-    if mh_imdb_ids:
-        mh = MediaHound()
-        mhids = mh.graph_enter(mh_imdb_ids)
-        logging.debug(mhids)
-    else:
-        mhids = None
     for imdb_id in movies:
         imdb_obj = IMDB(imdb_id)
-        mhid = mhids["IMDB::%s" % imdb_id]
+        if not imdb_obj.movie_data.mhid:
+            mh_imdb_id = "IMDB::%s" % imdb_id
+            mhid = mh.graph_enter([mh_imdb_id])[mh_imdb_id]
+        else:
+            mhid = imdb_obj.movie_data.mhid
         logging.debug("MediaHound ID is: %s" % mhid)
-        if mhid is not None and imdb_obj.movie_data.mhid is None:
+        if mhid is None:
+            continue
+        if imdb_obj.movie_data.mhid is None:
             mh_metadata = mh.graph_media(mhid)
             movie_metadata = {
                 'mhid'     : mhid,
@@ -283,7 +282,6 @@ with the information about each movie
 def get_movie_data(movies):
     if not movies:
         return False
-    mh = MediaHound()
     media_types = config.mediatypes
     movies_ret = {}
     movies_ret['movies'] = []
@@ -721,6 +719,7 @@ def delete_message(message):
     return response
 
 reddit = Reddit()
+mh = MediaHound()
 
 def search_process_reddit_posts(query,summoned=False,recursive=True,after=None):
     if after is not None:
